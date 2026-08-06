@@ -8,27 +8,27 @@
         "type": "tabs",
         "children": [
           {
-            "id": "2fe150c0123aed8b",
+            "id": "42dadad4eaedf14c",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Bem-vindo.md",
+                "file": "SCC0957 - Prática de Ciência de Dados II.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Bem-vindo"
+              "title": "SCC0957 - Prática de Ciência de Dados II"
             }
           }
         ]
       },
       {
-        "id": "c772cf57906d4e36",
+        "id": "37c5d0c872aebabe",
         "type": "tabs",
         "children": [
           {
-            "id": "e6f9515462ae874d",
+            "id": "168406d331cac008",
             "type": "leaf",
             "state": {
               "type": "graph",
@@ -185,8 +185,19 @@
               "icon": "lucide-list",
               "title": "Sumário"
             }
+          },
+          {
+            "id": "15b690b05e514ea9",
+            "type": "leaf",
+            "state": {
+              "type": "advanced-tables-toolbar",
+              "state": {},
+              "icon": "spreadsheet",
+              "title": "Advanced Tables"
+            }
           }
-        ]
+        ],
+        "currentTab": 5
       }
     ],
     "direction": "horizontal",
@@ -201,11 +212,21 @@
       "daily-notes:Abrir a nota de hoje": false,
       "templates:Inserir modelo": false,
       "command-palette:Abrir paleta de comandos": false,
-      "bases:Criar nova base": false
+      "bases:Criar nova base": false,
+      "table-editor-obsidian:Advanced Tables Toolbar": false,
+      "obsidian-git:Open Git source control": false
     }
   },
-  "active": "2fe150c0123aed8b",
+  "active": "42dadad4eaedf14c",
   "lastOpenFiles": [
-    "Bem-vindo.md"
+    "Organização do Projeto/To-do list.md",
+    "Descrição do Projeto/Sobre os Dados/Dados do Clima no Earth Engine.md",
+    "Descrição do Projeto/Sobre os Dados/Dados do Censo do IBGE.md",
+    "Descrição do Projeto/Sobre os Dados/Dados da dengue do SINAN.md",
+    "SCC0957 - Prática de Ciência de Dados II.md",
+    "Sem título.canvas",
+    "Descrição do Projeto/Sobre os Dados",
+    "Descrição do Projeto",
+    "Organização do Projeto"
   ]
 }
