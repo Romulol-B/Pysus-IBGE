@@ -1,0 +1,12 @@
+[project]
+name = "pysus-ibge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pandas>=2.3.3",
+    "pysal>=26.7",
+    "pysus>=2.7.0",
+    "seaborn>=0.13.2",
+]
