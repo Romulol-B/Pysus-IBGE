@@ -5,7 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "jupyter>=1.1.1",
+    "jupyterlab>=4.6.3",
     "pandas>=2.3.3",
+    "polars>=1.44.1",
     "pysal>=26.7",
     "pysus[web]>=2.7.0",
     "seaborn>=0.13.2",
