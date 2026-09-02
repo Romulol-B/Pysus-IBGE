@@ -33,11 +33,11 @@ def build_notebook() -> None:
 
 ## tl;dr
 
-- A base integrada de 2022 possui **4.678 municípios completos**, equivalentes a **83,99%** dos 5.570 municípios da malha; todos os códigos da base encontraram geometria.
-- A taxa de casos confirmados de dengue apresentou autocorrelação espacial positiva (**Moran I = 0,407; p simulado = 0,001**), portanto municípios com taxas semelhantes tendem a estar próximos no recorte analisado.
-- Os indicadores de saneamento também apresentaram agrupamento espacial: água (**I = 0,479**), esgoto (**I = 0,713**) e lixo coletado (**I = 0,466**), todos com `p_sim = 0,001`.
-- O LISA identificou **469 municípios Alto–Alto**, **1.348 Baixo–Baixo**, 154 Baixo–Alto e 38 Alto–Baixo para a taxa de dengue (`p_sim < 0,05`).
-- Os Morans bivariados entre dengue local e saneamento da vizinhança foram positivos, porém modestos (`I` entre 0,090 e 0,151). São associações ecológicas brutas e **não demonstram causalidade**.
+- O contrato de 2022 usa uma grade municipal completa e identifica explicitamente municípios **com** e **sem notificação registrada**.
+- A unidade geográfica do SINAN é o **município de residência**. Na ausência de notificação registrada, contagens e taxas permanecem iguais a zero quando há denominador populacional válido.
+- A auditoria abaixo verifica separadamente as coberturas de população, saneamento e geometria antes de construir os pesos espaciais.
+- Os resultados anteriores foram removidos. Este notebook deve ser executado novamente depois da regeneração do parquet para preencher Moran global, Moran bivariado e LISA com o novo universo analítico.
+- As associações calculadas são ecológicas e exploratórias; por si só, **não demonstram causalidade**.
 """
         ),
         markdown(
@@ -53,12 +53,12 @@ O notebook combina `sinan/processados/sinan_saneamento_2022.parquet` com a malha
 
 ### Principais premissas
 
-1. A unidade de análise é município de notificação em 2022.
+1. A unidade de análise é o município de residência em 2022.
 2. Os pesos usam os oito centroides municipais mais próximos (`KNN`, `k=8`) em `EPSG:5880`, uma projeção métrica para o Brasil, e são padronizados por linha.
-3. KNN foi preferido porque 892 municípios da malha não possuem linha no recorte SINAN 2022; usar contiguidade apenas sobre os municípios observados criaria vizinhanças interrompidas pelas lacunas.
-4. Não se presume que município ausente tenha zero casos. Esses municípios permanecem sem valor e aparecem em cinza.
+3. KNN mantém o mesmo número de vizinhos por município e é construído somente depois da auditoria das coberturas necessárias.
+4. Ausência de notificação registrada é uma categoria explícita do contrato, não uma linha ausente inferida pelo `merge`; esses municípios participam da análise com taxa zero quando elegíveis.
 5. A inferência usa 999 permutações com sementes fixas. `p_sim = 0,001` é o menor valor possível com esse número de permutações.
-6. A análise é exploratória, espacial e ecológica; não controla clima, urbanização, estrutura etária, acesso ao diagnóstico ou subnotificação.
+6. A análise é exploratória, espacial e ecológica; não controla urbanização, estrutura etária, acesso ao diagnóstico ou subnotificação. Os dados climáticos permanecem fora deste contrato por enquanto.
 """
         ),
         markdown("## Dados"),
@@ -107,11 +107,22 @@ display(
         {"valor": lambda value: f"{value:,.2f}" if value % 1 else f"{value:,.0f}"}
     )
 )
+
+notification_summary = (
+    full_map.groupby(
+        ["tem_notificacao_registrada", "situacao_registro_sinan"],
+        dropna=False,
+    )
+    .size()
+    .rename("municipios")
+    .reset_index()
+)
+display(notification_summary)
 """
         ),
         markdown(
             """
-A auditoria distingue cobertura analítica de qualidade do vínculo. Os 4.678 registros foram ligados à geometria; a cobertura de 83,99% decorre da ausência de linha SINAN para 892 municípios, não de falha no código municipal.
+A auditoria conta as duas situações de notificação a partir da flag fornecida pelo pipeline e mostra, separadamente, quantos municípios têm população, saneamento e geometria utilizáveis. Códigos inválidos são contabilizados, mas excluídos da análise espacial.
 """
         ),
         code(
@@ -148,7 +159,7 @@ plt.show()
         ),
         markdown(
             """
-O mapa usa quintis entre os municípios observados para evidenciar a posição relativa, e não faixas epidemiológicas normativas. As maiores classes se concentram visualmente sobretudo no Centro-Oeste e em partes do Sul e Sudeste, enquanto as lacunas de cobertura permanecem em cinza.
+O mapa usa quintis para evidenciar a posição relativa, e não faixas epidemiológicas normativas. Municípios sem notificação registrada entram com taxa zero; cinza é reservado a dado analítico indisponível. A distribuição geográfica deve ser interpretada somente após a reexecução.
 """
         ),
         markdown("### 5. Autocorrelação espacial global"),
@@ -187,7 +198,7 @@ plt.show()
         ),
         markdown(
             """
-O `I` positivo de 0,407 é incompatível com uma distribuição espacial aleatória sob as 999 permutações. O resultado descreve agrupamento, mas não identifica sozinho onde estão os clusters nem explica seus mecanismos.
+A tabela e o diagrama gerados acima fornecem o valor de `I` e o `p_sim` para o novo universo municipal. Moran global descreve agrupamento geral, mas não identifica sozinho onde estão os clusters nem explica seus mecanismos.
 """
         ),
         markdown("### 6. Sensibilidade ao número de vizinhos"),
@@ -250,7 +261,7 @@ plt.show()
         ),
         markdown(
             """
-Os clusters Alto–Alto indicam municípios com taxa acima da média cercados por vizinhos também acima da média. Eles aparecem principalmente em partes de São Paulo, Paraná, Mato Grosso do Sul, Goiás e Rio Grande do Sul. Baixo–Baixo predomina em áreas do Norte e do litoral oriental. Municípios não significativos e sem registro SINAN não devem ser interpretados como clusters.
+Clusters Alto–Alto indicam municípios com taxa acima da média cercados por vizinhos também acima da média; Baixo–Baixo representa a configuração oposta. Municípios sem notificação registrada continuam no universo e podem integrar clusters de valores baixos. A localização e a quantidade de cada classe devem ser descritas a partir da saída reexecutada.
 """
         ),
         code(
@@ -302,7 +313,7 @@ plt.show()
         ),
         markdown(
             """
-Os coeficientes bivariados são positivos e pequenos. Isso significa que, neste recorte bruto, taxas locais mais altas de dengue tendem fracamente a ocorrer próximas de municípios com percentuais mais altos dos serviços observados. O resultado não deve ser lido como efeito protetor ou prejudicial do saneamento: urbanização, densidade, diagnóstico, clima e outros fatores podem produzir a associação espacial.
+O sinal, a magnitude e a incerteza dos coeficientes bivariados devem ser preenchidos a partir da tabela reexecutada. O resultado não deve ser lido como efeito protetor ou prejudicial do saneamento: urbanização, densidade, diagnóstico e outros fatores podem produzir a associação espacial.
 """
         ),
         markdown("### 9. Salvar tabelas reproduzíveis"),
@@ -325,11 +336,15 @@ sorted(path.name for path in FIGURE_DIR.glob("*.png"))
             """
 ## Takeaways
 
-1. Existe dependência espacial relevante na taxa municipal de dengue em 2022; análises posteriores não devem assumir independência entre municípios.
-2. O mapa LISA oferece um recorte mais acionável que o mapa de taxas isolado, pois distingue aglomerados espaciais de valores altos, baixos e outliers locais.
-3. Esgotamento é o indicador de saneamento com maior autocorrelação própria, mas as relações espaciais bivariadas com dengue são modestas e não causais.
-4. Antes de modelar risco, é necessário decidir como tratar os 892 municípios sem linha SINAN e acrescentar covariáveis climáticas, urbanas e demográficas.
-5. A multiplicidade dos 4.678 testes LISA deve ser considerada em análises confirmatórias; aqui `p_sim < 0,05` é usado apenas para exploração.
+Esta seção deve ser atualizada após a execução do novo parquet, usando somente os valores exibidos nas tabelas e nos mapas. A leitura final deve registrar:
+
+1. se a grade municipal atingiu cobertura integral de população, saneamento e geometria;
+2. o sinal, a magnitude e o `p_sim` do Moran global da taxa de dengue;
+3. a estabilidade do resultado nas configurações de KNN avaliadas;
+4. a quantidade e a localização dos clusters LISA, lembrando que municípios sem notificação registrada permanecem na análise com taxa zero;
+5. o sinal e a magnitude das associações bivariadas, sem interpretação causal.
+
+A multiplicidade dos testes LISA deve ser considerada em análises confirmatórias; aqui `p_sim < 0,05` é usado apenas para exploração.
 
 ### Reexecução
 

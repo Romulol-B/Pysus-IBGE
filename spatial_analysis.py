@@ -40,6 +40,13 @@ ANALYSIS_VARIABLES = {
     "pct_lixo_coletado_domicilio": "Domicílios com lixo coletado no domicílio (%)",
 }
 
+NOTIFICATION_FLAG = "tem_notificacao_registrada"
+NOTIFICATION_STATUS = "situacao_registro_sinan"
+NOTIFICATION_LABELS = {
+    True: "Com notificação registrada",
+    False: "Sem notificação registrada",
+}
+
 SANITATION_VARIABLES = {
     key: label
     for key, label in ANALYSIS_VARIABLES.items()
@@ -79,7 +86,13 @@ def ensure_boundary_cache(
 
 
 def _municipality_code_column(boundaries: gpd.GeoDataFrame) -> str:
-    candidates = ["codarea", "CD_MUN", "CD_MUNICIP", "code_muni"]
+    candidates = [
+        "codigo_municipio",
+        "codarea",
+        "CD_MUN",
+        "CD_MUNICIP",
+        "code_muni",
+    ]
     for column in candidates:
         if column in boundaries.columns:
             return column
@@ -89,23 +102,61 @@ def _municipality_code_column(boundaries: gpd.GeoDataFrame) -> str:
     )
 
 
+def _normalize_municipality_codes(values: pd.Series) -> pd.Series:
+    """Normaliza chaves IBGE de seis/sete dígitos para a chave de seis."""
+    cleaned = values.astype("string").str.strip()
+    numeric_code = cleaned.str.extract(r"^(\d{6,7})(?:\.0)?$", expand=False)
+    return numeric_code.str.slice(0, 6)
+
+
+def _require_columns(
+    frame: pd.DataFrame,
+    columns: set[str],
+    source: str,
+) -> None:
+    missing = sorted(columns.difference(frame.columns))
+    if missing:
+        raise ValueError(f"{source}: colunas obrigatórias ausentes: {missing}")
+
+
+def _validate_notification_flag(values: pd.Series) -> None:
+    """Valida a flag do contrato sem deduzi-la da presença da linha."""
+    non_null = values.dropna()
+    boolean_values = non_null.map(lambda value: isinstance(value, (bool, np.bool_)))
+    if values.isna().any() or not boolean_values.all():
+        raise ValueError(
+            f"{NOTIFICATION_FLAG} deve conter somente booleanos não nulos."
+        )
+
+
+def _percentage(numerator: int, denominator: int) -> float:
+    return float(numerator / denominator * 100) if denominator else np.nan
+
+
 def load_spatial_data(
     data_path: Path = DEFAULT_DATA_PATH,
     boundary_path: Path = DEFAULT_BOUNDARY_PATH,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, pd.DataFrame]:
-    """Carrega, normaliza e vincula a base analítica à malha municipal.
+    """Carrega, normaliza e vincula o contrato municipal à malha do IBGE.
 
-    Retorna a malha completa, o subconjunto com dados para todas as variáveis
-    analisadas e uma pequena tabela de auditoria da integração.
+    A situação de notificação vem exclusivamente do contrato analítico. Um
+    município sem notificação registrada continua elegível para a análise
+    espacial quando possui população, saneamento, taxa zero e geometria. Linhas
+    com código municipal inválido são auditadas, mas não entram nos mapas.
+
+    Retorna a malha completa, o subconjunto analítico e uma tabela de auditoria
+    com as coberturas de população, saneamento e geometria.
     """
     boundary_path = ensure_boundary_cache(boundary_path)
     boundaries = gpd.read_file(boundary_path)
     code_column = _municipality_code_column(boundaries)
     boundaries = boundaries[[code_column, "geometry"]].copy()
-    boundaries["codigo_municipio"] = (
-        boundaries[code_column].astype("string").str.strip().str.slice(0, 6)
-    )
-    boundaries = boundaries.drop(columns=code_column)
+    normalized_boundary_codes = _normalize_municipality_codes(boundaries[code_column])
+    if normalized_boundary_codes.isna().any():
+        raise ValueError("A malha contém códigos municipais inválidos.")
+    boundaries["codigo_municipio"] = normalized_boundary_codes
+    if code_column != "codigo_municipio":
+        boundaries = boundaries.drop(columns=code_column)
 
     invalid_geometry = ~boundaries.geometry.is_valid
     if invalid_geometry.any():
@@ -120,12 +171,63 @@ def load_spatial_data(
     if not boundaries.geometry.is_valid.all():
         raise ValueError("A malha ainda contém geometrias inválidas após o reparo.")
 
-    indicators = pd.read_parquet(data_path)
-    indicators["codigo_municipio"] = (
-        indicators["codigo_municipio"].astype("string").str.strip().str.zfill(6)
+    indicators = pd.read_parquet(data_path).copy()
+    required_columns = {
+        "codigo_municipio",
+        "populacao",
+        NOTIFICATION_FLAG,
+        NOTIFICATION_STATUS,
+        *ANALYSIS_VARIABLES,
+    }
+    _require_columns(indicators, required_columns, "base analítica")
+
+    indicators["codigo_municipio"] = _normalize_municipality_codes(
+        indicators["codigo_municipio"]
     )
+    invalid_code_count = int(indicators["codigo_municipio"].isna().sum())
+    indicators = indicators.loc[indicators["codigo_municipio"].notna()].copy()
     if indicators["codigo_municipio"].duplicated().any():
         raise ValueError("A base analítica contém códigos municipais duplicados.")
+
+    _validate_notification_flag(indicators[NOTIFICATION_FLAG])
+    if indicators[NOTIFICATION_STATUS].isna().any():
+        raise ValueError(f"{NOTIFICATION_STATUS} não pode conter valores nulos.")
+
+    without_notification = indicators[NOTIFICATION_FLAG].eq(False)
+    for count_column in ("notificacoes", "casos_confirmados"):
+        if count_column not in indicators:
+            continue
+        counts = pd.to_numeric(indicators[count_column], errors="coerce")
+        invalid_zero = without_notification & (counts.isna() | counts.ne(0))
+        if invalid_zero.any():
+            raise ValueError(
+                f"{count_column} deve ser zero quando {NOTIFICATION_FLAG} é falso."
+            )
+
+    population = pd.to_numeric(indicators["populacao"], errors="coerce")
+    zero_rate_expected = without_notification & population.gt(0)
+    rates = pd.to_numeric(indicators["taxa_confirmados_100k"], errors="coerce")
+    invalid_zero_rate = zero_rate_expected & (
+        rates.isna() | ~np.isclose(rates.fillna(np.nan), 0.0)
+    )
+    if invalid_zero_rate.any():
+        raise ValueError(
+            "taxa_confirmados_100k deve ser zero para municípios sem "
+            "notificação registrada e com população válida."
+        )
+
+    population_coverage = population.gt(0)
+    if "correspondencia_populacao" in indicators:
+        population_coverage &= indicators["correspondencia_populacao"].eq(True)
+
+    sanitation_columns = list(SANITATION_VARIABLES)
+    sanitation_coverage = indicators[sanitation_columns].notna().all(axis=1)
+    if "correspondencia_sidra" in indicators:
+        sanitation_coverage &= indicators["correspondencia_sidra"].eq(True)
+
+    geometry_coverage = indicators["codigo_municipio"].isin(
+        boundaries["codigo_municipio"]
+    )
 
     full_map = boundaries.merge(
         indicators,
@@ -134,35 +236,64 @@ def load_spatial_data(
         validate="one_to_one",
         indicator="_origem_integracao",
     )
-    full_map["situacao_dado"] = np.where(
-        full_map["_origem_integracao"].eq("both"),
-        "Com registro SINAN",
-        "Sem registro SINAN",
-    )
+    missing_analytical_record = int(full_map["_origem_integracao"].eq("left_only").sum())
     full_map = full_map.drop(columns="_origem_integracao")
 
-    missing_geometry = indicators.loc[
-        ~indicators["codigo_municipio"].isin(boundaries["codigo_municipio"]),
-        "codigo_municipio",
-    ]
-    analysis_map = full_map.dropna(subset=list(ANALYSIS_VARIABLES)).copy()
+    full_population_coverage = pd.to_numeric(
+        full_map["populacao"], errors="coerce"
+    ).gt(0)
+    if "correspondencia_populacao" in full_map:
+        full_population_coverage &= full_map["correspondencia_populacao"].eq(True)
+    full_sanitation_coverage = full_map[sanitation_columns].notna().all(axis=1)
+    if "correspondencia_sidra" in full_map:
+        full_sanitation_coverage &= full_map["correspondencia_sidra"].eq(True)
+    complete_variables = full_map[list(ANALYSIS_VARIABLES)].notna().all(axis=1)
+    analysis_map = full_map.loc[
+        full_population_coverage & full_sanitation_coverage & complete_variables
+    ].copy()
     analysis_map = analysis_map.sort_values("codigo_municipio").reset_index(drop=True)
 
+    valid_base_count = len(indicators)
+    with_notification_count = int(indicators[NOTIFICATION_FLAG].eq(True).sum())
+    without_notification_count = int(indicators[NOTIFICATION_FLAG].eq(False).sum())
+    population_count = int(population_coverage.sum())
+    sanitation_count = int(sanitation_coverage.sum())
+    geometry_count = int(geometry_coverage.sum())
     audit = pd.DataFrame(
         {
             "metrica": [
                 "municipios_malha",
                 "municipios_base_analitica",
-                "municipios_completos_analise",
+                "registros_codigo_municipio_invalido",
+                "municipios_com_notificacao_registrada",
+                "municipios_sem_notificacao_registrada",
+                "municipios_com_populacao",
+                "cobertura_percentual_populacao",
+                "municipios_com_saneamento",
+                "cobertura_percentual_saneamento",
+                "municipios_com_geometria",
+                "cobertura_percentual_geometria",
+                "municipios_malha_sem_base_analitica",
                 "municipios_base_sem_geometria",
-                "cobertura_percentual_malha",
+                "municipios_completos_analise",
+                "cobertura_percentual_analise",
             ],
             "valor": [
                 len(boundaries),
-                len(indicators),
+                valid_base_count,
+                invalid_code_count,
+                with_notification_count,
+                without_notification_count,
+                population_count,
+                _percentage(population_count, valid_base_count),
+                sanitation_count,
+                _percentage(sanitation_count, valid_base_count),
+                geometry_count,
+                _percentage(geometry_count, valid_base_count),
+                missing_analytical_record,
+                valid_base_count - geometry_count,
                 len(analysis_map),
-                len(missing_geometry),
-                len(analysis_map) / len(boundaries) * 100,
+                _percentage(len(analysis_map), len(boundaries)),
             ],
         }
     )
@@ -321,12 +452,13 @@ def _map_axes(title: str, figsize: tuple[int, int] = (12, 10)):
 
 
 def plot_data_coverage(full_map: gpd.GeoDataFrame):
-    """Mapeia municípios presentes e ausentes no recorte SINAN 2022."""
-    fig, ax = _map_axes("Cobertura municipal da base integrada — 2022")
-    full_map.loc[full_map["situacao_dado"].eq("Sem registro SINAN")].plot(
+    """Mapeia a flag de notificação fornecida pelo contrato municipal."""
+    _require_columns(full_map, {NOTIFICATION_FLAG}, "malha integrada")
+    fig, ax = _map_axes("Situação municipal das notificações — 2022")
+    full_map.loc[full_map[NOTIFICATION_FLAG].eq(False)].plot(
         ax=ax, color=NEUTRAL, edgecolor="white", linewidth=0.08
     )
-    full_map.loc[full_map["situacao_dado"].eq("Com registro SINAN")].plot(
+    full_map.loc[full_map[NOTIFICATION_FLAG].eq(True)].plot(
         ax=ax, color=BLUE, edgecolor="white", linewidth=0.08
     )
     handles = [
@@ -335,7 +467,7 @@ def plot_data_coverage(full_map: gpd.GeoDataFrame):
     ]
     ax.legend(
         handles,
-        ["Com registro SINAN", "Sem registro SINAN"],
+        [NOTIFICATION_LABELS[True], NOTIFICATION_LABELS[False]],
         title="Situação",
         loc="lower left",
         frameon=False,
@@ -358,7 +490,7 @@ def plot_rate_choropleth(full_map: gpd.GeoDataFrame):
         missing_kwds={
             "color": NEUTRAL,
             "edgecolor": "white",
-            "label": "Sem registro SINAN",
+            "label": "Dados analíticos indisponíveis",
         },
         ax=ax,
     )
