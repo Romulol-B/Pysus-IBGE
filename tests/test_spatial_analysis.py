@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from shapely.geometry import Point
 
-import spatial_analysis as spatial
+import utils.spatial_analysis as spatial
 
 
 class SpatialMunicipalContractTest(unittest.TestCase):

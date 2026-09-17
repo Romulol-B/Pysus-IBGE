@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import polars as pl
 
-from analysis_pipeline import (
+from utils.analysis_pipeline import (
     _build_integration_audit,
     _build_population_contract,
     _build_sanitation_contract,
