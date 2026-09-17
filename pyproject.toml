@@ -1,14 +1,16 @@
 [project]
 name = "pysus-ibge"
 version = "0.1.0"
-description = "Add your description here"
+description = "Integração municipal de dengue (SINAN) e saneamento e população (IBGE/SIDRA)"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "httpx>=0.28.1",
     "jupyter>=1.1.1",
     "jupyterlab>=4.6.3",
     "pandas>=2.3.3",
     "polars>=1.44.1",
+    "plotly>=7.0.0",
     "pysal>=26.7",
     "pysus[web]>=2.7.0",
     "seaborn>=0.13.2",

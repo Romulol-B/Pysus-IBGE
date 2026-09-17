@@ -1,1 +1,9 @@
 sinan/
+SCC0957-Pratica-de-Ciencia-de-Dados-II-Obsidian/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Keep the data directory without versioning local datasets.
+/data/*
+!/data/.gitkeep
