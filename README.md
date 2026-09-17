@@ -40,6 +40,9 @@ Na primeira execução sem cache, use `--refresh-ibge` para consultar o SIDRA. O
 arquivos gerados ficam em `sinan/processados/`, diretório deliberadamente não
 versionado junto com os dados brutos.
 
+O diretório `data/` é versionado apenas com o marcador `.gitkeep`. Os dados
+locais dentro dele são ignorados pelo Git.
+
 ## Contratos produzidos
 
 - `sinan_municipio_ano.parquet`
