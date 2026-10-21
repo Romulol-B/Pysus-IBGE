@@ -16,3 +16,6 @@ dependencies = [
     "seaborn>=0.13.2",
     "sidrapy>=0.1.4",
 ]
+
+[tool.databricks.environment]
+environment_version = '6'
