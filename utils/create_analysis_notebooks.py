@@ -40,7 +40,7 @@ def write(relative, content):
     path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
 
-def sinan_notebook(state=None):
+def _sinan_notebook(state=None):
     title = "Brasil" if state is None else "São Paulo — residência"
     return [
         ("markdown", f"# EDA SINAN — {title}\n\nDados de anos encerrados, agregados por residência. Execute primeiro `python -m utils.deng_download` e `python -m utils.analysis_pipeline`. As saídas anteriores foram invalidadas após correção da classificação histórica. `DENGUE` não é diagnóstico final: usamos `CON_CLASSI` (até 2006) e `CLASSI_FIN` (demais anos)."),
@@ -93,7 +93,7 @@ display(states)
     ]
 
 
-def integration_notebook():
+def _integration_notebook():
     return [
         ("markdown", "# Integração SINAN–IBGE/SIDRA\n\nMunicípio de residência (`ID_MN_RESI`), população residente do mesmo ano e saneamento somente nos anos censitários compatíveis. Classificação final histórica: `CON_CLASSI`, nunca o antecedente `DENGUE`."),
         ("code", BOOTSTRAP + '''
@@ -126,7 +126,7 @@ px.scatter(complete.to_pandas(), x="pct_esgoto_rede_geral_ou_pluvial", y="taxa_c
     ]
 
 
-def inmet_eda():
+def _inmet_eda():
     return [
         ("markdown", "# EDA INMET — cobertura e triagem\n\nO parquet bruto é preservado. A visão limpa trata sentinelas, formatos históricos e valores fora de limites de triagem. Presença de dados não comprova representatividade espacial ou qualidade física."),
         ("code", BOOTSTRAP + '''
@@ -175,7 +175,7 @@ daily.sink_parquet(PROJECT_ROOT / "data/INMET_diario_uf.parquet")
     ]
 
 
-def climate_notebook():
+def _climate_notebook():
     return [
         ("markdown", "# Dengue e clima — exploração UF × dia, 2010\n\nBase reproduzível gerada neste repositório. Desfecho: notificações por residência e data de notificação. Meteorologia: dia UTC, com cobertura por variável; não se assume alinhamento exato com o dia administrativo local. Não se compara a magnitude dessas correlações com correlações anuais de saneamento."),
         ("code", BOOTSTRAP + '''
@@ -203,6 +203,26 @@ rates = annual.with_columns(pl.col("codigo_municipio").str.slice(0, 2).alias("UF
 display(rates)
 '''),
     ]
+
+
+def sinan_notebook(state=None):
+    from utils.notebook_visualizations import sinan_visualizations
+    return sinan_visualizations(_sinan_notebook(state), state)
+
+
+def integration_notebook():
+    from utils.notebook_visualizations import integration_visualizations
+    return integration_visualizations(_integration_notebook())
+
+
+def inmet_eda():
+    from utils.notebook_visualizations import inmet_visualizations
+    return inmet_visualizations(_inmet_eda())
+
+
+def climate_notebook():
+    from utils.notebook_visualizations import climate_visualizations
+    return climate_visualizations(_climate_notebook())
 
 
 def build_notebooks():

@@ -31,3 +31,27 @@ Em 2022, as diferenças foram pequenas: **−0,41% nas notificações e −0,27%
 
 As conclusões foram atualizadas nos cinco notebooks de análise, no README e nos geradores, preservando os resultados salvos. Os textos agora distinguem a autocorrelação global positiva da ausência de clusters locais significativos e utilizam a classificação histórica corrigida, sem interpretação causal das associações.
 
+## Visualizações recuperadas
+
+Conferência com o commit `ff6708e`, anterior às correções:
+
+| Notebook | Gráficos anteriores preservados/recuperados |
+|---|---:|
+| SINAN Brasil | 12 |
+| SINAN São Paulo | 11 |
+| Integração SINAN–IBGE (cada uma das duas cópias) | 4 |
+| Análise espacial | 5 |
+| EDA INMET | 6 |
+| Apresentação dengue e clima | 6 |
+| **Total** | **48** |
+
+Recuperados mapas, rankings, barras, séries, dispersões e painéis mensais, mantendo cores e disposição originais. Valores, recortes e rótulos seguem a metodologia corrigida; não são idênticos aos resultados antigos. SINAN e integração foram reexecutados. Os 12 gráficos INMET voltaram ao código, sem novas saídas de execução completa. Os geradores também preservam os gráficos recuperados.
+
+**Gráfico extra:** adicionada a evolução anual de notificações e casos confirmados por ano-fonte, uma vez para Brasil e outra para São Paulo. Serve para conferir a série histórica corrigida e distinguir notificações de confirmações. É uma inclusão nova, não uma recuperação: são 48 visualizações anteriores mais essas duas.
+
+## Separação dos commits
+
+O primeiro commit (`3fbd0b8`, correções) corrigiu os métodos e centralizou transformações, mas também simplificou excessivamente os notebooks, removendo visualizações. Essa remoção não era necessária às correções.
+
+A segunda etapa, destinada ao commit de restauração, recupera essas visualizações após a revisão, preservando os cálculos e as conclusões corrigidos. Portanto, repara a remoção excessiva do primeiro commit, sem desfazer suas correções metodológicas.
+
