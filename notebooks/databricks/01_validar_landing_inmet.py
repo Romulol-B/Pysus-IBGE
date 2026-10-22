@@ -73,6 +73,10 @@ display(dados_reais.limit(20))
 
 # COMMAND ----------
 
+dados_reais.write.mode("overwrite").format('delta').saveAsTable(ARQUIVO_INMET_BUCKET)
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 4. Reexecutar e informar o resultado
 # MAGIC Execute **Run all** novamente. As mesmas duas linhas devem aparecer.
