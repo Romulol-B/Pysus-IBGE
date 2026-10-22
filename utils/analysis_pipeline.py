@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import re
 import time
+import warnings
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 
@@ -16,7 +18,8 @@ import httpx
 import polars as pl
 
 
-SINAN_DIR = Path("sinan")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SINAN_DIR = PROJECT_ROOT / "sinan"
 PROCESSED_DIR = SINAN_DIR / "processados"
 SIDRA_API = "https://apisidra.ibge.gov.br/values"
 
@@ -134,6 +137,13 @@ def _year_from_filename(path: Path) -> int:
 
 def _raw_column(schema: dict[str, pl.DataType], name: str) -> pl.Expr:
     if name in schema:
+        if schema[name] == pl.Date or isinstance(schema[name], pl.Datetime):
+            return pl.col(name).cast(pl.Date).cast(pl.String)
+        if schema[name].is_numeric():
+            # Campos DBF codificados podem chegar como float por causa de nulos.
+            # Remover somente o sufixo decimal zero; nunca apagar pontuação de
+            # um valor arbitrário (1000.0 deve continuar significando 1000).
+            return pl.col(name).cast(pl.String).str.replace(r"\.0+$", "")
         return pl.col(name).cast(pl.String).str.strip_chars()
     return pl.lit(None, dtype=pl.String)
 
@@ -188,13 +198,15 @@ def _left_join_preserving_rows(
 
 
 def _classification_status(raw: pl.Expr, source: str) -> pl.Expr:
-    confirmed = ["1", "2", "3", "4", "10", "11", "12"] if source == "CLASSI_FIN" else ["1"]
+    if source not in {"CON_CLASSI", "CLASSI_FIN"}:
+        raise ValueError(f"Campo de classificação final inválido: {source}")
+    confirmed = ["1", "2", "3", "4", "10", "11", "12"]
     return (
         pl.when(raw.is_null() | (raw == ""))
         .then(pl.lit("nao_preenchido"))
         .when(raw.is_in(confirmed))
         .then(pl.lit("confirmado"))
-        .when(raw == "5" if source == "CLASSI_FIN" else raw == "2")
+        .when(raw == "5")
         .then(pl.lit("descartado"))
         .when(raw == "8")
         .then(pl.lit("inconclusivo"))
@@ -244,9 +256,18 @@ def _evolution_status(raw: pl.Expr) -> pl.Expr:
     )
 
 
-def scan_sinan(source_dir: Path = SINAN_DIR) -> pl.LazyFrame:
+def scan_sinan(source_dir: Path = SINAN_DIR, years: Iterable[int] | None = None) -> pl.LazyFrame:
     """Harmoniza todos os arquivos SINAN sem descartar colunas por era."""
     paths = sorted(source_dir.glob("DENGBR*.parquet"))
+    if years is not None:
+        selected_years = set(years)
+        # Selecionar caminhos antes de abrir schemas: um ano não solicitado
+        # não pode impedir uma análise histórica independente.
+        paths = [source_dir / f"DENGBR{year % 100:02d}.parquet" for year in sorted(selected_years)]
+        paths = [path for path in paths if path.exists()]
+        missing_years = selected_years - {_year_from_filename(path) for path in paths}
+        if missing_years:
+            raise FileNotFoundError(f"Anos SINAN ausentes: {sorted(missing_years)}")
     if not paths:
         raise FileNotFoundError(f"Nenhum DENGBR*.parquet encontrado em {source_dir}")
 
@@ -254,8 +275,16 @@ def scan_sinan(source_dir: Path = SINAN_DIR) -> pl.LazyFrame:
     for path in paths:
         schema = dict(pl.read_parquet_schema(path))
         year = _year_from_filename(path)
-        class_source = "CLASSI_FIN" if "CLASSI_FIN" in schema else "DENGUE"
-        evolution_source = "EVOLUCAO" if "EVOLUCAO" in schema else "CON_EVOLUC"
+        if year >= date.today().year:
+            raise ValueError(f"{path.name}: ano ainda não encerrado; não comparar com anos completos.")
+        if not pl.scan_parquet(path).select(pl.len()).collect().item():
+            raise ValueError(f"{path.name}: fonte anual vazia; não inferir taxas zero.")
+        class_source = "CON_CLASSI" if year <= 2006 else "CLASSI_FIN"
+        required = {"DT_NOTIFIC", "NU_ANO", "ID_MUNICIP", "ID_MN_RESI", class_source}
+        missing = required.difference(schema)
+        if missing:
+            raise ValueError(f"{path.name}: campos obrigatórios ausentes: {sorted(missing)}")
+        evolution_source = "CON_EVOLUC" if year <= 2006 else "EVOLUCAO"
         date_raw = _raw_column(schema, "DT_NOTIFIC")
         notification_code_raw = _raw_column(schema, "ID_MUNICIP")
         residence_code_raw = _raw_column(schema, "ID_MN_RESI")
@@ -293,7 +322,10 @@ def scan_sinan(source_dir: Path = SINAN_DIR) -> pl.LazyFrame:
                 _classification_status(class_raw, class_source).alias("status_classificacao"),
                 race_raw.alias("raca_original"),
                 _race_status(race_raw).alias("raca"),
+                _raw_column(schema, "CS_SEXO").alias("sexo"),
                 evolution_raw.alias("evolucao_original"),
+                pl.lit(evolution_source).alias("fonte_evolucao"),
+                pl.lit(evolution_source in schema).alias("campo_evolucao_disponivel"),
                 _evolution_status(evolution_raw).alias("evolucao"),
             )
             .with_columns(
@@ -322,6 +354,7 @@ def scan_sinan(source_dir: Path = SINAN_DIR) -> pl.LazyFrame:
 def build_sinan_outputs(
     source_dir: Path = SINAN_DIR,
     output_dir: Path = PROCESSED_DIR,
+    allow_undated: bool = False,
 ) -> dict[str, pl.DataFrame]:
     """Gera painel municipal e tabelas compactas para a EDA."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -346,7 +379,7 @@ def build_sinan_outputs(
             .sum()
             .alias("municipio_residencia_notificacao_divergente"),
             pl.col("data_notificacao").is_null().sum().alias("data_invalida"),
-            (pl.col("ano_informado") != pl.col("ano_arquivo")).sum().alias("ano_informado_divergente"),
+            (pl.col("ano_informado").is_null() | (pl.col("ano_informado") != pl.col("ano_arquivo"))).sum().alias("ano_informado_divergente"),
             (
                 pl.col("data_notificacao").is_not_null()
                 & (pl.col("data_notificacao").dt.year() != pl.col("ano_arquivo"))
@@ -357,6 +390,29 @@ def build_sinan_outputs(
         .sort("ano_arquivo")
         .collect(engine="streaming")
     )
+
+    # O período anual é o ano-fonte, por escolha explícita do contrato.
+    # Datas em anos adjacentes e NU_ANO divergente permanecem na auditoria;
+    # não são descartados nem reinterpretados como um ano civil completo.
+    invalid_dates = quality.filter(pl.col("data_invalida") > 0)
+    quality.write_csv(output_dir / "qualidade_sinan_por_arquivo.csv")
+    undated = sinan.filter(pl.col("data_notificacao").is_null()).select(
+        "arquivo", "ano_arquivo", "ano_informado", "data_notificacao_original",
+        "codigo_municipio_residencia_original", "classificacao_original",
+    ).collect(engine="streaming")
+    undated.write_csv(output_dir / "auditoria_sinan_datas_invalidas.csv")
+    if invalid_dates.height and not allow_undated:
+        raise ValueError(
+            "Datas/anos SINAN inconsistentes; consulte qualidade_sinan_por_arquivo.csv "
+            f"antes de gerar taxas: {invalid_dates.to_dicts()}"
+        )
+    if undated.height:
+        warnings.warn(
+            f"{undated.height} registro(s) sem data válida mantido(s) apenas pelo ano-fonte; "
+            "a exportação mensal conserva ano/mês civil desconhecido. "
+            "Consulte auditoria_sinan_datas_invalidas.csv.",
+            UserWarning,
+        )
 
     panel = (
         sinan.filter(pl.col("codigo_municipio_residencia").is_not_null())
@@ -385,9 +441,13 @@ def build_sinan_outputs(
                 "codigo_municipio_residencia": "codigo_municipio",
             }
         )
+        .with_columns(pl.lit("ano_fonte_sinan").alias("periodo_referencia"))
         .sort("ano", "codigo_municipio")
         .collect(engine="streaming")
     )
+    absent_residence = set(quality["ano_arquivo"].to_list()) - set(panel["ano"].to_list())
+    if absent_residence:
+        raise ValueError(f"Anos sem residência municipal utilizável: {sorted(absent_residence)}; não inferir zeros.")
 
     invalid_codes = (
         sinan.filter(
@@ -453,17 +513,15 @@ def build_sinan_outputs(
         .collect(engine="streaming")
     )
     monthly = (
-        sinan.filter(
-            pl.col("data_notificacao").is_not_null()
-            & (pl.col("data_notificacao").dt.year() == pl.col("ano_arquivo"))
-        )
-        .group_by("ano_arquivo", "mes_notificacao")
+        sinan.with_columns(pl.col("data_notificacao").dt.year().alias("ano_calendario_notificacao"))
+        .group_by("ano_arquivo", "ano_calendario_notificacao", "mes_notificacao")
         .agg(
             pl.len().alias("notificacoes"),
             pl.col("caso_confirmado").sum().cast(pl.UInt32).alias("casos_confirmados"),
         )
         .rename({"ano_arquivo": "ano", "mes_notificacao": "mes"})
-        .sort("ano", "mes")
+        .with_columns(pl.lit("ano_fonte_sinan").alias("periodo_referencia"))
+        .sort("ano", "ano_calendario_notificacao", "mes")
         .collect(engine="streaming")
     )
 
@@ -486,6 +544,7 @@ def build_sinan_outputs(
         "raca": yearly_race,
         "evolucao": yearly_evolution,
         "mensal": monthly,
+        "datas_invalidas": undated,
     }
 
 
@@ -573,6 +632,7 @@ def _validate_percentage_groups(
     for column in expected_columns:
         invalid = frame.filter(
             pl.col(column).is_null()
+            | ~pl.col(column).is_finite()
             | (pl.col(column) < 0)
             | (pl.col(column) > 100)
         )
@@ -806,6 +866,8 @@ def build_ibge_outputs(
         # Reconsulta somente população e preserva as extrações de saneamento.
         cached["populacao"] = fetch_population()
         cached["populacao"].write_parquet(paths["populacao"])
+        _validate_percentage_groups(cached["saneamento_2010"], SANITATION_PERCENTAGE_GROUPS_2010, "cache SIDRA 2010")
+        _validate_percentage_groups(cached["saneamento_2022"], SANITATION_PERCENTAGE_GROUPS_2022, "cache SIDRA 2022")
         return cached
 
     population = fetch_population()
@@ -841,11 +903,20 @@ def _municipality_catalog(ibge: dict[str, pl.DataFrame]) -> pl.DataFrame:
 def _build_population_contract(
     panel: pl.DataFrame,
     population: pl.DataFrame,
+    available_years: set[int] | None = None,
 ) -> pl.DataFrame:
     """Usa a população como grade e anexa contagens SINAN por residência."""
     keys = ["ano", "codigo_municipio"]
     _assert_unique(population, keys, "população municipal")
     _assert_unique(panel, keys, "painel SINAN por residência")
+    if available_years is None:
+        available_years = set(panel["ano"].unique().to_list())
+    unavailable = set(population["ano"].unique().to_list()) - available_years
+    if unavailable:
+        raise ValueError(
+            f"Fonte SINAN ausente para os anos {sorted(unavailable)}; "
+            "não é permitido converter anos sem fonte em taxas zero."
+        )
     population_grid = _left_join_preserving_rows(
         population,
         panel,
@@ -919,7 +990,7 @@ def _build_population_contract(
         .alias("taxa_confirmados_100k"),
     )
     _assert_unique(joined, keys, "contrato SINAN-população")
-    return joined.sort(keys)
+    return joined.with_columns(pl.lit("ano_fonte_sinan").alias("periodo_referencia")).sort(keys)
 
 
 def _build_sanitation_contract(
@@ -1070,14 +1141,18 @@ def build_integrated_outputs(
     source_dir: Path = SINAN_DIR,
     output_dir: Path = PROCESSED_DIR,
     refresh_ibge: bool = False,
+    allow_undated: bool = False,
 ) -> dict[str, pl.DataFrame]:
     """Agrega notificações e cria os três contratos analíticos finais."""
-    sinan = build_sinan_outputs(source_dir, output_dir)
+    sinan = build_sinan_outputs(source_dir, output_dir, allow_undated=allow_undated)
     ibge = build_ibge_outputs(output_dir, refresh=refresh_ibge)
     panel = sinan["painel"]
     _validate_census_population(ibge["populacao"])
 
-    population_panel = _build_population_contract(panel, ibge["populacao"])
+    available_years = set(sinan["qualidade"]["ano_arquivo"].to_list())
+    population_panel = _build_population_contract(
+        panel, ibge["populacao"], available_years=available_years
+    )
     sanitation = _build_sanitation_contract(
         population_panel,
         ibge["saneamento_2010"],
@@ -1123,8 +1198,9 @@ def build_integrated_outputs(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--refresh-ibge", action="store_true", help="refaz as consultas à API SIDRA")
+    parser.add_argument("--allow-undated", action="store_true", help="mantém datas ilegíveis no ano-fonte, com auditoria e mês desconhecido")
     args = parser.parse_args()
-    outputs = build_integrated_outputs(refresh_ibge=args.refresh_ibge)
+    outputs = build_integrated_outputs(refresh_ibge=args.refresh_ibge, allow_undated=args.allow_undated)
     print(outputs["auditoria"])
     print(outputs["qualidade"].select(pl.exclude("arquivo").sum()))
 

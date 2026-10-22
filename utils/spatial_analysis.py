@@ -9,28 +9,32 @@ linha de comando para regenerar figuras e tabelas de auditoria.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import geopandas as gpd
 import httpx
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from esda import Moran, Moran_BV, Moran_Local
+from esda import Moran, Moran_BV, Moran_Local, Moran_Rate, Moran_Local_Rate
 from libpysal.weights import KNN, W
 from matplotlib.lines import Line2D
-from splot.esda import lisa_cluster, plot_moran, plot_moran_bv
+from splot.esda import plot_moran, plot_moran_bv
 
 
-PROCESSED_DIR = Path("sinan/processados")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROCESSED_DIR = PROJECT_ROOT / "sinan/processados"
 DEFAULT_DATA_PATH = PROCESSED_DIR / "sinan_saneamento_2022.parquet"
-DEFAULT_BOUNDARY_PATH = PROCESSED_DIR / "ibge_municipios_min.geojson"
-DEFAULT_FIGURE_DIR = Path("figuras/analise_espacial")
+DEFAULT_BOUNDARY_PATH = PROCESSED_DIR / "ibge_municipios_2022_min.geojson"
+DEFAULT_FIGURE_DIR = PROJECT_ROOT / "figuras/analise_espacial"
 DEFAULT_RESULT_DIR = PROCESSED_DIR / "analise_espacial"
 BOUNDARY_URL = (
     "https://servicodados.ibge.gov.br/api/v3/malhas/paises/BR"
     "?formato=application%2Fvnd.geo%2Bjson"
-    "&qualidade=minima&intrarregiao=municipio"
+    "&qualidade=minima&intrarregiao=municipio&periodo=2022"
 )
 
 ANALYSIS_VARIABLES = {
@@ -73,15 +77,33 @@ def ensure_boundary_cache(
     path: Path = DEFAULT_BOUNDARY_PATH,
     url: str = BOUNDARY_URL,
 ) -> Path:
-    """Baixa a malha simplificada do IBGE somente quando o cache não existe."""
+    """Exige proveniência e integridade da malha de 2022, inclusive no cache."""
+    metadata_path = path.with_suffix(path.suffix + ".metadata.json")
     if path.exists():
+        if not metadata_path.exists():
+            raise ValueError(f"Malha sem proveniência: {metadata_path}. Use uma extração documentada de 2022.")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if metadata.get("ano") != 2022 or metadata.get("sha256") != digest:
+            raise ValueError("Malha incompatível com 2022 ou cache alterado.")
         return path
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    if parse_qs(urlsplit(url).query).get("periodo") != ["2022"]:
+        raise ValueError("A URL da malha deve solicitar explicitamente periodo=2022.")
     with httpx.Client(timeout=180, follow_redirects=True) as client:
         response = client.get(url)
         response.raise_for_status()
-        path.write_bytes(response.content)
+        payload = response.content
+    geojson = json.loads(payload)
+    if not isinstance(geojson, dict) or geojson.get("type") != "FeatureCollection" or not geojson.get("features"):
+        raise ValueError("IBGE retornou uma malha GeoJSON vazia ou inválida.")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    temporary.replace(path)
+    metadata_path.write_text(json.dumps({
+        "ano": 2022, "url": url, "sha256": hashlib.sha256(payload).hexdigest(),
+    }, indent=2), encoding="utf-8")
     return path
 
 
@@ -173,6 +195,7 @@ def load_spatial_data(
 
     indicators = pd.read_parquet(data_path).copy()
     required_columns = {
+        "ano",
         "codigo_municipio",
         "populacao",
         NOTIFICATION_FLAG,
@@ -180,6 +203,19 @@ def load_spatial_data(
         *ANALYSIS_VARIABLES,
     }
     _require_columns(indicators, required_columns, "base analítica")
+    if not pd.to_numeric(indicators["ano"], errors="coerce").eq(2022).all():
+        raise ValueError("A análise e a malha exigem somente observações de 2022.")
+    for column in ["populacao", *ANALYSIS_VARIABLES]:
+        original = indicators[column]
+        numeric = pd.to_numeric(original, errors="coerce")
+        invalid = original.notna() & (~np.isfinite(numeric) | numeric.lt(0))
+        if column == "populacao":
+            invalid |= numeric.eq(0)
+        elif column in SANITATION_VARIABLES:
+            invalid |= numeric.gt(100)
+        if invalid.any():
+            raise ValueError(f"{column}: valores não numéricos, não finitos ou fora do domínio.")
+        indicators[column] = numeric
 
     indicators["codigo_municipio"] = _normalize_municipality_codes(
         indicators["codigo_municipio"]
@@ -198,6 +234,9 @@ def load_spatial_data(
         if count_column not in indicators:
             continue
         counts = pd.to_numeric(indicators[count_column], errors="coerce")
+        if (counts.isna() | ~np.isfinite(counts) | counts.lt(0) | counts.ne(np.floor(counts))).any():
+            raise ValueError(f"{count_column} deve conter contagens inteiras não negativas.")
+        indicators[count_column] = counts
         invalid_zero = without_notification & (counts.isna() | counts.ne(0))
         if invalid_zero.any():
             raise ValueError(
@@ -205,6 +244,13 @@ def load_spatial_data(
             )
 
     population = pd.to_numeric(indicators["populacao"], errors="coerce")
+    if {"notificacoes", "casos_confirmados"}.issubset(indicators):
+        if (indicators["casos_confirmados"] > indicators["notificacoes"]).any():
+            raise ValueError("Casos confirmados excedem notificações.")
+        expected_rate = indicators["casos_confirmados"] / population * 100_000
+        known = population.notna()
+        if not np.isclose(indicators.loc[known, "taxa_confirmados_100k"], expected_rate.loc[known]).all():
+            raise ValueError("Taxa incompatível com casos confirmados/população.")
     zero_rate_expected = without_notification & population.gt(0)
     rates = pd.to_numeric(indicators["taxa_confirmados_100k"], errors="coerce")
     invalid_zero_rate = zero_rate_expected & (
@@ -308,6 +354,8 @@ def build_knn_weights(
     """Constrói pesos KNN sobre centroides em projeção métrica para o Brasil."""
     if len(analysis_map) <= k:
         raise ValueError(f"São necessárias mais de {k} observações para KNN.")
+    if not isinstance(k, int) or k < 1:
+        raise ValueError("k deve ser um inteiro positivo.")
 
     projected = analysis_map.to_crs(projected_crs)
     centroids = projected.geometry.centroid
@@ -324,7 +372,32 @@ def _aligned_values(
     variable: str,
 ) -> np.ndarray:
     indexed = analysis_map.set_index("codigo_municipio")
-    return indexed.loc[weights.id_order, variable].to_numpy(dtype=float)
+    values = indexed.loc[weights.id_order, variable].to_numpy(dtype=float)
+    if len(values) < 4 or not np.isfinite(values).all() or np.var(values) == 0:
+        raise ValueError(f"{variable}: Moran exige valores finitos e variância positiva.")
+    return values
+
+
+def adjust_spatial_pvalues(pvalues: np.ndarray) -> np.ndarray:
+    """FDR Benjamini–Yekutieli: válido também sob dependência espacial."""
+    pvalues = np.asarray(pvalues, dtype=float)
+    if not np.isfinite(pvalues).all() or ((pvalues < 0) | (pvalues > 1)).any():
+        raise ValueError("P-valores inválidos.")
+    n = len(pvalues)
+    order = np.argsort(pvalues)
+    rank = np.arange(1, n + 1)
+    adjusted = pvalues[order] * n * np.sum(1 / rank) / rank
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1].clip(0, 1)
+    result = np.empty(n)
+    result[order] = adjusted
+    return result
+
+
+def _validate_inference(permutations: int, alpha: float = 0.05) -> None:
+    if not isinstance(permutations, int) or permutations < 1:
+        raise ValueError("Permutações devem ser um inteiro positivo.")
+    if not 0 < alpha < 1:
+        raise ValueError("alpha deve estar entre 0 e 1.")
 
 
 def calculate_global_moran(
@@ -334,6 +407,7 @@ def calculate_global_moran(
     seed: int = 42,
 ) -> tuple[pd.DataFrame, dict[str, Moran]]:
     """Calcula Moran global para dengue e três indicadores de saneamento."""
+    _validate_inference(permutations)
     rows: list[dict[str, float | int | str]] = []
     models: dict[str, Moran] = {}
     for offset, (variable, label) in enumerate(ANALYSIS_VARIABLES.items()):
@@ -351,6 +425,7 @@ def calculate_global_moran(
                 "moran_i": float(model.I),
                 "moran_esperado": float(model.EI),
                 "p_sim": float(model.p_sim),
+                "p_sim_bilateral": min(1.0, 2 * float(model.p_sim)),
                 "z_sim": float(model.z_sim),
                 "permutacoes": permutations,
             }
@@ -365,6 +440,7 @@ def calculate_bivariate_moran(
     seed: int = 142,
 ) -> tuple[pd.DataFrame, dict[str, Moran_BV]]:
     """Relaciona dengue local ao saneamento dos municípios vizinhos."""
+    _validate_inference(permutations)
     dengue = _aligned_values(analysis_map, weights, "taxa_confirmados_100k")
     rows: list[dict[str, float | int | str]] = []
     models: dict[str, Moran_BV] = {}
@@ -380,6 +456,7 @@ def calculate_bivariate_moran(
                 "n": len(dengue),
                 "moran_bivariado_i": float(model.I),
                 "p_sim": float(model.p_sim),
+                "p_sim_bilateral": min(1.0, 2 * float(model.p_sim)),
                 "z_sim": float(model.z_sim),
                 "permutacoes": permutations,
             }
@@ -396,6 +473,7 @@ def calculate_local_moran(
     alpha: float = 0.05,
 ) -> tuple[gpd.GeoDataFrame, Moran_Local]:
     """Calcula LISA e adiciona quadrantes significativos ao GeoDataFrame."""
+    _validate_inference(permutations, alpha)
     values = _aligned_values(analysis_map, weights, variable)
     model = Moran_Local(
         values,
@@ -403,17 +481,53 @@ def calculate_local_moran(
         permutations=permutations,
         seed=seed,
         n_jobs=1,
+        alternative="two-sided",
     )
     ordered = analysis_map.set_index("codigo_municipio").loc[weights.id_order].copy()
-    significant_quadrant = np.where(model.p_sim < alpha, model.q, 0)
+    adjusted_p = adjust_spatial_pvalues(model.p_sim)
+    significant_quadrant = np.where(adjusted_p < alpha, model.q, 0)
     ordered["lisa_i"] = model.Is
     ordered["lisa_p_sim"] = model.p_sim
+    ordered["lisa_p_ajustado_by"] = adjusted_p
+    ordered["lisa_quadrante_bruto"] = model.q
     ordered["lisa_quadrante"] = significant_quadrant
     ordered["lisa_cluster"] = pd.Series(
         significant_quadrant, index=ordered.index
     ).map(LISA_LABELS)
-    ordered["lisa_significativo"] = model.p_sim < alpha
+    ordered["lisa_significativo"] = adjusted_p < alpha
     return ordered.reset_index(), model
+
+
+def calculate_rate_sensitivity(analysis_map, weights, permutations=999, seed=442, alpha=0.05):
+    """Compara a taxa bruta com Moran de taxas ajustado à população (Assunção–Reis)."""
+    _validate_inference(permutations, alpha)
+    ordered = analysis_map.set_index("codigo_municipio").loc[weights.id_order]
+    events = ordered["casos_confirmados"].to_numpy(dtype=float)
+    population = ordered["populacao"].to_numpy(dtype=float)
+    _aligned_values(analysis_map, weights, "taxa_confirmados_100k")
+    if not np.isfinite(events).all() or not np.isfinite(population).all() or (population <= 0).any():
+        raise ValueError("Sensibilidade de taxas exige contagens e populações válidas.")
+    np.random.seed(seed)
+    global_model = Moran_Rate(events, population, weights, adjusted=True, permutations=permutations)
+    local_model = Moran_Local_Rate(events, population, weights, adjusted=True, permutations=permutations, seed=seed, alternative="two-sided")
+    if not np.isfinite(global_model.I) or not np.isfinite(local_model.Is).all():
+        raise ValueError("Ajuste de taxas produziu estatísticas indefinidas.")
+    adjusted = adjust_spatial_pvalues(local_model.p_sim)
+    local = pd.DataFrame({
+        "codigo_municipio": weights.id_order,
+        "lisa_taxa_ajustada_i": local_model.Is,
+        "lisa_taxa_ajustada_p_sim": local_model.p_sim,
+        "lisa_taxa_ajustada_p_by": adjusted,
+        "lisa_taxa_ajustada_quadrante": np.where(adjusted < alpha, local_model.q, 0),
+        "alpha": alpha,
+    })
+    summary = pd.DataFrame([{
+        "metodo": "Assuncao-Reis", "moran_i": float(global_model.I),
+        "p_sim": float(global_model.p_sim), "permutacoes": permutations,
+        "p_sim_bilateral": min(1.0, 2 * float(global_model.p_sim)),
+        "alpha": alpha,
+    }])
+    return summary, local
 
 
 def calculate_knn_sensitivity(
@@ -424,6 +538,7 @@ def calculate_knn_sensitivity(
     seed: int = 342,
 ) -> pd.DataFrame:
     """Verifica se o Moran global é estável a diferentes números de vizinhos."""
+    _validate_inference(permutations)
     rows: list[dict[str, float | int]] = []
     for offset, k in enumerate(neighbors):
         weights = build_knn_weights(analysis_map, k=k)
@@ -435,6 +550,7 @@ def calculate_knn_sensitivity(
                 "k_vizinhos": k,
                 "moran_i": float(model.I),
                 "p_sim": float(model.p_sim),
+                "p_sim_bilateral": min(1.0, 2 * float(model.p_sim)),
                 "z_sim": float(model.z_sim),
                 "permutacoes": permutations,
             }
@@ -446,7 +562,7 @@ def _map_axes(title: str, figsize: tuple[int, int] = (12, 10)):
     fig, ax = plt.subplots(figsize=figsize)
     fig.patch.set_facecolor(BACKGROUND)
     ax.set_facecolor(BACKGROUND)
-    ax.set_title(title, loc="left", fontsize=15, color=INK, pad=14, weight="bold")
+    ax.set_title(title + "\nPeríodo SINAN: ano-fonte; não necessariamente ano civil", loc="left", fontsize=15, color=INK, pad=14, weight="bold")
     ax.set_axis_off()
     return fig, ax
 
@@ -506,7 +622,7 @@ def plot_global_moran_result(model: Moran, title: str):
         fitline_kwds={"color": GOLD, "linewidth": 2.2},
     )
     fig.patch.set_facecolor(BACKGROUND)
-    fig.suptitle(title, x=0.04, ha="left", fontsize=15, color=INK, weight="bold")
+    fig.suptitle(title + " — ano-fonte SINAN", x=0.04, ha="left", fontsize=15, color=INK, weight="bold")
     for ax in np.ravel(axes):
         ax.set_facecolor(BACKGROUND)
     axes[0].set_title("Distribuição de referência")
@@ -528,7 +644,7 @@ def plot_bivariate_moran_result(model: Moran_BV, title: str):
         fitline_kwds={"color": GOLD, "linewidth": 2.2},
     )
     fig.patch.set_facecolor(BACKGROUND)
-    fig.suptitle(title, x=0.04, ha="left", fontsize=15, color=INK, weight="bold")
+    fig.suptitle(title + " — ano-fonte SINAN", x=0.04, ha="left", fontsize=15, color=INK, weight="bold")
     for ax in np.ravel(axes):
         ax.set_facecolor(BACKGROUND)
     axes[0].set_title("Distribuição de referência")
@@ -547,19 +663,31 @@ def plot_lisa_clusters(
     model: Moran_Local,
     alpha: float = 0.05,
 ):
-    """Usa splot para mapear agrupamentos LISA significativos."""
+    """Mapeia os agrupamentos LISA após correção FDR-BY."""
     fig, ax = _map_axes("Clusters LISA da taxa de dengue — 2022")
     full_map.plot(ax=ax, color="#eef0f3", edgecolor="white", linewidth=0.08)
-    lisa_cluster(
-        model,
-        lisa_map.copy(),
-        p=alpha,
-        ax=ax,
-        legend=True,
-        legend_kwds={"loc": "lower left", "frameon": False},
-    )
+    # splot.lisa_cluster usa p bruto: desenhar explicitamente os grupos
+    # ajustados evita divergência entre o CSV e a figura.
+    _validate_inference(1, alpha)
+    _require_columns(lisa_map, {"codigo_municipio", "lisa_p_ajustado_by"}, "mapa LISA")
+    if "lisa_quadrante_bruto" in lisa_map:
+        quadrants = lisa_map["lisa_quadrante_bruto"].to_numpy()
+    else:
+        # Compatibilidade com resultados antigos: a ordem pertence aos IDs
+        # dos pesos, nunca à posição atual de uma tabela ordenada/filtrada.
+        quadrant_by_id = pd.Series(model.q, index=model.w.id_order)
+        if not lisa_map["codigo_municipio"].isin(quadrant_by_id.index).all():
+            raise ValueError("Município do mapa LISA ausente dos pesos do modelo.")
+        quadrants = lisa_map["codigo_municipio"].map(quadrant_by_id).to_numpy()
+    labels = pd.Series(np.where(lisa_map["lisa_p_ajustado_by"] < alpha, quadrants, 0), index=lisa_map.index).map(LISA_LABELS)
+    colors = {0: NEUTRAL, 1: "#b2182b", 2: "#92c5de", 3: "#2166ac", 4: "#f4a582"}
+    for quadrant, label in LISA_LABELS.items():
+        subset = lisa_map.loc[labels.eq(label)]
+        if len(subset):
+            subset.plot(ax=ax, color=colors[quadrant], edgecolor="white", linewidth=0.08)
+    ax.legend(handles=[Line2D([0], [0], marker="s", linestyle="", color=colors[q], label=label) for q, label in LISA_LABELS.items()], loc="lower left", frameon=False)
     ax.set_title(
-        f"Clusters LISA da taxa de dengue — 2022 (p simulado < {alpha:.2f})",
+        f"Clusters LISA da taxa de dengue — 2022 (FDR-BY < {alpha:.2f})",
         loc="left",
         fontsize=15,
         color=INK,
@@ -614,12 +742,17 @@ def run_analysis(
         permutations=permutations,
         seed=seed + 300,
     )
+    rate_sensitivity, rate_local = calculate_rate_sensitivity(
+        analysis_map, weights, permutations=permutations, seed=seed + 400
+    )
 
     result_dir.mkdir(parents=True, exist_ok=True)
     audit.to_csv(result_dir / "auditoria_geografica_2022.csv", index=False)
     global_table.to_csv(result_dir / "moran_global_2022.csv", index=False)
     bivariate_table.to_csv(result_dir / "moran_bivariado_2022.csv", index=False)
     sensitivity.to_csv(result_dir / "sensibilidade_knn_2022.csv", index=False)
+    rate_sensitivity.to_csv(result_dir / "sensibilidade_taxa_ajustada_2022.csv", index=False)
+    rate_local.to_csv(result_dir / "lisa_taxa_ajustada_2022.csv", index=False)
     lisa_map.drop(columns="geometry").to_csv(
         result_dir / "lisa_taxa_confirmados_2022.csv", index=False
     )
@@ -666,6 +799,8 @@ def run_analysis(
         "lisa": lisa_map,
         "modelo_lisa": lisa_model,
         "sensibilidade_knn": sensitivity,
+        "sensibilidade_taxa": rate_sensitivity,
+        "lisa_taxa_ajustada": rate_local,
     }
 
 

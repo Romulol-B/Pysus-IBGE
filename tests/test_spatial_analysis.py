@@ -28,6 +28,7 @@ class SpatialMunicipalContractTest(unittest.TestCase):
         )
         self.indicators = pd.DataFrame(
             {
+                "ano": [2022, 2022, 2022],
                 "codigo_municipio": ["110001", "110002", "110003"],
                 "municipio": ["Município A", "Município B", "Município C"],
                 "populacao": [10_000, 20_000, 30_000],
@@ -54,6 +55,7 @@ class SpatialMunicipalContractTest(unittest.TestCase):
 
     def _load(self, indicators: pd.DataFrame | None = None):
         with (
+            patch.object(spatial, "ensure_boundary_cache", return_value=self.boundary_path),
             patch.object(spatial.gpd, "read_file", return_value=self.boundaries.copy()),
             patch.object(
                 spatial.pd,

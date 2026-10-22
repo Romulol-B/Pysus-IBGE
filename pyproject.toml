@@ -3,7 +3,7 @@ name = "pysus-ibge"
 version = "0.1.0"
 description = "Integração municipal de dengue (SINAN) e saneamento e população (IBGE/SIDRA)"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28.1",
     "jupyter>=1.1.1",
@@ -12,10 +12,13 @@ dependencies = [
     "polars>=1.44.1",
     "plotly>=7.0.0",
     "pysal>=26.7",
-    "pysus[web]>=2.7.0",
+    "pysus[web]>=2.11.7",
     "seaborn>=0.13.2",
     "sidrapy>=0.1.4",
 ]
+
+[tool.setuptools.packages.find]
+include = ["utils*"]
 
 [tool.databricks.environment]
 environment_version = '6'

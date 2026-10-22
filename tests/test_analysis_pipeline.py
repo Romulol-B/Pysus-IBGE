@@ -32,7 +32,7 @@ class SinanHarmonizationTest(unittest.TestCase):
                 "NU_ANO": ["2000", "2000"],
                 "ID_MUNICIP": ["3550308", "3304557"],
                 "ID_MN_RESI": ["3304557", "3550308"],
-                "DENGUE": ["1", "2"],
+                "CON_CLASSI": ["1", "5"],
                 "CS_RACA": ["1", "9"],
                 "CON_EVOLUC": ["1", ""],
             }
@@ -123,8 +123,8 @@ class SinanHarmonizationTest(unittest.TestCase):
 
 
 class PopulationSourceTest(unittest.TestCase):
-    @patch("analysis_pipeline._validate_census_population")
-    @patch("analysis_pipeline._fetch_sidra")
+    @patch("utils.analysis_pipeline._validate_census_population")
+    @patch("utils.analysis_pipeline._fetch_sidra")
     def test_population_2010_uses_table_136_variable_93_and_total_category(
         self,
         fetch_mock,

@@ -2,29 +2,29 @@
 
 from pathlib import Path
 
-import nbformat as nbf
+from utils.create_analysis_notebooks import BOOTSTRAP, cell, write
 
 
-NOTEBOOK_PATH = Path("analise_espacial_pysal.ipynb")
+NOTEBOOK_PATH = Path("notebooks/Agregacao/DENGUE+IBGE/analise_espacial_pysal.ipynb")
 
 
 def markdown(text: str):
-    return nbf.v4.new_markdown_cell(text.strip())
+    return cell("markdown", text)
 
 
 def code(text: str):
-    return nbf.v4.new_code_cell(text.strip())
+    return cell("code", text)
 
 
 def build_notebook() -> None:
-    notebook = nbf.v4.new_notebook()
+    notebook = {}
     notebook["metadata"] = {
         "kernelspec": {
             "display_name": "Python 3",
             "language": "python",
             "name": "python3",
         },
-        "language_info": {"name": "python", "version": "3.14"},
+        "language_info": {"name": "python", "version": "3.13"},
     }
     notebook["cells"] = [
         markdown(
@@ -36,7 +36,7 @@ def build_notebook() -> None:
 - O contrato de 2022 usa uma grade municipal completa e identifica explicitamente municípios **com** e **sem notificação registrada**.
 - A unidade geográfica do SINAN é o **município de residência**. Na ausência de notificação registrada, contagens e taxas permanecem iguais a zero quando há denominador populacional válido.
 - A auditoria abaixo verifica separadamente as coberturas de população, saneamento e geometria antes de construir os pesos espaciais.
-- Os resultados anteriores foram removidos. Este notebook deve ser executado novamente depois da regeneração do parquet para preencher Moran global, Moran bivariado e LISA com o novo universo analítico.
+- Na coorte restaurada, os 5.570 municípios apresentam autocorrelação global positiva; nenhum cluster LISA local é significativo após FDR-BY a 5%.
 - As associações calculadas são ecológicas e exploratórias; por si só, **não demonstram causalidade**.
 """
         ),
@@ -64,7 +64,7 @@ O notebook combina `sinan/processados/sinan_saneamento_2022.parquet` com a malha
         markdown("## Dados"),
         markdown("### 1. Preparar o ambiente e os parâmetros"),
         code(
-            """
+            BOOTSTRAP + """
 from pathlib import Path
 import warnings
 
@@ -72,16 +72,15 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
 
-import spatial_analysis as spatial
+from utils import spatial_analysis as spatial
 
 warnings.filterwarnings(
     "ignore",
     message="Casting complex values to real discards the imaginary part",
 )
 
-PROJECT_ROOT = Path.cwd()
 DATA_PATH = PROJECT_ROOT / "sinan/processados/sinan_saneamento_2022.parquet"
-BOUNDARY_PATH = PROJECT_ROOT / "sinan/processados/ibge_municipios_min.geojson"
+BOUNDARY_PATH = spatial.DEFAULT_BOUNDARY_PATH
 FIGURE_DIR = PROJECT_ROOT / "figuras/analise_espacial"
 RESULT_DIR = PROJECT_ROOT / "sinan/processados/analise_espacial"
 
@@ -159,7 +158,7 @@ plt.show()
         ),
         markdown(
             """
-O mapa usa quintis para evidenciar a posição relativa, e não faixas epidemiológicas normativas. Municípios sem notificação registrada entram com taxa zero; cinza é reservado a dado analítico indisponível. A distribuição geográfica deve ser interpretada somente após a reexecução.
+O mapa usa quintis, não faixas epidemiológicas normativas nem classes de significância. Municípios sem notificação registrada entram com taxa zero; cinza indica dado indisponível. Cores próximas no mapa não demonstram, por si só, um cluster significativo.
 """
         ),
         markdown("### 5. Autocorrelação espacial global"),
@@ -174,7 +173,7 @@ global_moran, global_models = spatial.calculate_global_moran(
 
 display(
     global_moran[
-        ["indicador", "n", "media", "desvio_padrao", "moran_i", "p_sim"]
+        ["indicador", "n", "media", "desvio_padrao", "moran_i", "p_sim_bilateral"]
     ].style.format(
         {
             "media": "{:.2f}",
@@ -198,7 +197,7 @@ plt.show()
         ),
         markdown(
             """
-A tabela e o diagrama gerados acima fornecem o valor de `I` e o `p_sim` para o novo universo municipal. Moran global descreve agrupamento geral, mas não identifica sozinho onde estão os clusters nem explica seus mecanismos.
+Em 2022, há autocorrelação espacial global positiva da taxa de dengue: I = 0,4313 e p bilateral por permutação = 0,002, com 5.570 municípios. O teste identifica um padrão global, mas não localiza clusters nem explica suas causas.
 """
         ),
         markdown("### 6. Sensibilidade ao número de vizinhos"),
@@ -215,9 +214,17 @@ display(knn_sensitivity.style.format({"moran_i": "{:.3f}", "p_sim": "{:.3f}", "z
         ),
         markdown(
             """
-O sinal e a conclusão inferencial devem permanecer estáveis nas quatro configurações para que o agrupamento global não dependa exclusivamente de `k=8`.
+O resultado global é estável para k = 4, 8, 12 e 16: I varia de 0,4104 a 0,4740, sempre positivo, com p bilateral = 0,002. Portanto, o padrão observado não depende apenas de k = 8.
 """
         ),
+        markdown("### Sensibilidade à população\n\nO ajuste de Assunção–Reis mantém o Moran global positivo (I = 0,4312; p bilateral = 0,002). Também não há clusters locais significativos após FDR-BY nas taxas ajustadas. Esses resultados não eliminam subnotificação ou confundimento."),
+        code("""
+rate_sensitivity, rate_local = spatial.calculate_rate_sensitivity(
+    analysis_map, weights, permutations=PERMUTATIONS, seed=SEED + 400, alpha=ALPHA
+)
+display(rate_sensitivity)
+display(rate_local.head())
+"""),
         markdown("### 7. Autocorrelação local — LISA"),
         code(
             """
@@ -261,7 +268,7 @@ plt.show()
         ),
         markdown(
             """
-Clusters Alto–Alto indicam municípios com taxa acima da média cercados por vizinhos também acima da média; Baixo–Baixo representa a configuração oposta. Municípios sem notificação registrada continuam no universo e podem integrar clusters de valores baixos. A localização e a quantidade de cada classe devem ser descritas a partir da saída reexecutada.
+Nenhum dos 5.570 municípios apresenta LISA significativo após o teste bilateral e a correção FDR-BY a 5%. Não há clusters Alto–Alto, Baixo–Baixo, Alto–Baixo ou Baixo–Alto significativos para localizar ou destacar nesta execução. A tabela de Alto–Alto abaixo está vazia por esse motivo. Isso não contradiz a autocorrelação global positiva: os testes avaliam hipóteses diferentes.
 """
         ),
         code(
@@ -269,7 +276,7 @@ Clusters Alto–Alto indicam municípios com taxa acima da média cercados por v
 high_high = (
     lisa_map.loc[lisa_map["lisa_cluster"].eq("Alto–Alto")]
     .nlargest(10, "taxa_confirmados_100k")
-    [["municipio", "taxa_confirmados_100k", "lisa_i", "lisa_p_sim"]]
+    [["municipio", "taxa_confirmados_100k", "lisa_i", "lisa_p_sim", "lisa_p_ajustado_by"]]
 )
 display(
     high_high.style.format(
@@ -293,7 +300,7 @@ bivariate_moran, bivariate_models = spatial.calculate_bivariate_moran(
 )
 display(
     bivariate_moran[
-        ["indicador_vizinhanca", "n", "moran_bivariado_i", "p_sim"]
+        ["indicador_vizinhanca", "n", "moran_bivariado_i", "p_sim_bilateral"]
     ].style.format({"moran_bivariado_i": "{:.3f}", "p_sim": "{:.3f}"})
 )
 """
@@ -313,7 +320,7 @@ plt.show()
         ),
         markdown(
             """
-O sinal, a magnitude e a incerteza dos coeficientes bivariados devem ser preenchidos a partir da tabela reexecutada. O resultado não deve ser lido como efeito protetor ou prejudicial do saneamento: urbanização, densidade, diagnóstico e outros fatores podem produzir a associação espacial.
+As associações espaciais bivariadas são positivas e de baixa magnitude: água I = 0,1441, esgoto I = 0,1146 e coleta de lixo I = 0,1651, com p bilateral = 0,002 em cada análise exploratória. Isso não demonstra efeito protetor ou prejudicial do saneamento; urbanização, diagnóstico e outros fatores podem explicar as associações.
 """
         ),
         markdown("### 9. Salvar tabelas reproduzíveis"),
@@ -324,6 +331,8 @@ geographic_audit.to_csv(RESULT_DIR / "auditoria_geografica_2022.csv", index=Fals
 global_moran.to_csv(RESULT_DIR / "moran_global_2022.csv", index=False)
 bivariate_moran.to_csv(RESULT_DIR / "moran_bivariado_2022.csv", index=False)
 knn_sensitivity.to_csv(RESULT_DIR / "sensibilidade_knn_2022.csv", index=False)
+rate_sensitivity.to_csv(RESULT_DIR / "sensibilidade_taxa_ajustada_2022.csv", index=False)
+rate_local.to_csv(RESULT_DIR / "lisa_taxa_ajustada_2022.csv", index=False)
 lisa_map.drop(columns="geometry").to_csv(
     RESULT_DIR / "lisa_taxa_confirmados_2022.csv",
     index=False,
@@ -334,31 +343,28 @@ sorted(path.name for path in FIGURE_DIR.glob("*.png"))
         ),
         markdown(
             """
-## Takeaways
+## Conclusões
 
-Esta seção deve ser atualizada após a execução do novo parquet, usando somente os valores exibidos nas tabelas e nos mapas. A leitura final deve registrar:
+1. A análise cobre os 5.570 municípios, com população, saneamento e geometria disponíveis. O período é o ano-fonte SINAN de 2022, não necessariamente um ano civil completo.
+2. Há autocorrelação global positiva (I = 0,4313; p bilateral = 0,002), estável nas quatro configurações KNN e após ajuste da taxa à população.
+3. Nenhum cluster LISA local permanece significativo após FDR-BY a 5%, tanto na taxa bruta quanto na ajustada. Não se sustentam as antigas identificações de clusters municipais significativos.
+4. As associações com saneamento são fracas e exploratórias. Não demonstram causalidade, proteção ou aumento de risco causado pelo saneamento.
 
-1. se a grade municipal atingiu cobertura integral de população, saneamento e geometria;
-2. o sinal, a magnitude e o `p_sim` do Moran global da taxa de dengue;
-3. a estabilidade do resultado nas configurações de KNN avaliadas;
-4. a quantidade e a localização dos clusters LISA, lembrando que municípios sem notificação registrada permanecem na análise com taxa zero;
-5. o sinal e a magnitude das associações bivariadas, sem interpretação causal.
-
-A multiplicidade dos testes LISA deve ser considerada em análises confirmatórias; aqui `p_sim < 0,05` é usado apenas para exploração.
+A ausência de descobertas locais não prova ausência de agrupamento espacial. O resultado global e o local devem ser interpretados separadamente.
 
 ### Reexecução
 
 Execute o notebook de cima para baixo ou use:
 
 ```bash
-uv run python spatial_analysis.py
-uv run jupyter nbconvert --execute --to notebook --inplace analise_espacial_pysal.ipynb
+uv run python -m utils.spatial_analysis
+uv run jupyter nbconvert --execute --to notebook --inplace notebooks/Agregacao/DENGUE+IBGE/analise_espacial_pysal.ipynb
 ```
 """
         ),
     ]
 
-    NOTEBOOK_PATH.write_text(nbf.writes(notebook), encoding="utf-8")
+    write(NOTEBOOK_PATH, [(c["cell_type"], "".join(c["source"])) for c in notebook["cells"]])
 
 
 if __name__ == "__main__":
