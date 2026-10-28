@@ -12,6 +12,13 @@ associações exploratórias com condições domiciliares de saneamento.
   integração municipal nos anos compatíveis.
 - `analise_espacial_pysal.ipynb`: EDA geográfica de 2022 com pesos espaciais,
   Moran global/bivariado, LISA e mapas municipais.
+- [`agregacao_sinan_ibge_inmet_uf_mes.ipynb`](notebooks/Agregacao/DENGUE+IBGE+IMNET/agregacao_sinan_ibge_inmet_uf_mes.ipynb):
+  integração SINAN–SIDRA–INMET por UF e mês de calendário, com resumo anual,
+  auditorias, séries temporais, dispersões integradas e cobertura meteorológica.
+  Começa em 2010 e também aceita 2022 como recorte separado. Consulta os percentuais
+  estaduais diretamente no SIDRA e usa painel fixo de estações INMET. Sem o Parquet
+  climático, executa a parte SINAN–IBGE e identifica as variáveis climáticas ausentes.
+  Os dados e gráficos HTML ficam em `sinan/processados/agregacao_tres_fontes/<ano>/`.
 
 ## Fontes
 
@@ -27,7 +34,9 @@ associações exploratórias com condições domiciliares de saneamento.
 O clima é preparado por `utils.inmet_pipeline` e integrado por
 `utils.climate_integration`. Ele permanece separado dos contratos municipais
 de saneamento: não se misturam escalas UF–dia e município–ano na comparação
-de coeficientes.
+de coeficientes. O novo notebook de agregação usa `utils.aggregate_sources`
+para reunir as fontes em uma escala comum UF–mês, com saneamento censitário
+constante no ano e auditoria própria pela data efetiva da notificação.
 
 ## Execução
 
