@@ -7,3 +7,4 @@ __pycache__/
 # Keep the data directory without versioning local datasets.
 /data/*
 !/data/.gitkeep
+docs/
