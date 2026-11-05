@@ -10,6 +10,9 @@
 # MAGIC grade oficial e datas inválidas ficam auditáveis. A contagem anual usa
 # MAGIC o ano do arquivo; a série mensal preserva o ano civil da notificação,
 # MAGIC inclusive datas de anos adjacentes e mês desconhecido.
+# MAGIC Casos graves harmonizam as classificações de cada época e exigem critério
+# MAGIC laboratorial ou clínico-epidemiológico. Óbitos exigem dengue confirmada e
+# MAGIC evolução `2` (óbito pelo agravo); não representam pessoas deduplicadas.
 
 # COMMAND ----------
 
@@ -31,16 +34,31 @@ for ano in ANOS:
     if not spark.catalog.tableExists(origem):
         raise ValueError(f"Execute primeiro a Bronze: {origem}")
     bruto = spark.table(origem)
+    obrigatorias = {"ID_MN_RESI", "DT_NOTIFIC", "CLASSI_FIN", "CRITERIO", "EVOLUCAO"}
+    if obrigatorias - set(bruto.columns):
+        raise ValueError(f"{origem}: campos SINAN ausentes: {sorted(obrigatorias - set(bruto.columns))}")
     codigo = F.trim(F.col("ID_MN_RESI").cast("string"))
+    classificacao = F.trim(F.col("CLASSI_FIN").cast("string"))
+    criterio = F.trim(F.col("CRITERIO").cast("string"))
+    evolucao = F.trim(F.col("EVOLUCAO").cast("string"))
+    confirmacoes = ["1", "2"]
+    classes_dengue = ["1", "2", "3", "4"] if ano == 2010 else ["10", "11", "12"]
+    classes_graves = ["2", "3", "4"] if ano == 2010 else ["11", "12"]
     quadro = bruto.select(
         F.lit(ano).alias("ano"), codigo.alias("codigo_original"),
         F.col("DT_NOTIFIC").cast("string").alias("data_original"),
+        classificacao.alias("classificacao_original"),
+        criterio.alias("criterio_original"), evolucao.alias("evolucao_original"),
         F.when(codigo.rlike(r"^\d{7}$"), F.substring(codigo, 1, 6))
         .when(codigo.rlike(r"^\d{6}$"), codigo).alias("codigo_municipio"),
         F.coalesce(
             F.to_date(F.expr("try_to_timestamp(trim(cast(`DT_NOTIFIC` as string)), 'yyyy-MM-dd')")),
             F.to_date(F.expr("try_to_timestamp(trim(cast(`DT_NOTIFIC` as string)), 'yyyyMMdd')")),
         ).alias("data_notificacao"),
+        (classificacao.isin(classes_dengue) & criterio.isin(confirmacoes)).alias("caso_confirmado"),
+        (classificacao.isin(classes_graves) & criterio.isin(confirmacoes)).alias("caso_grave"),
+        (classificacao.isin(classes_dengue) & criterio.isin(confirmacoes)
+         & (evolucao == "2")).alias("obito_dengue"),
     )
     quadros.append(quadro)
 
@@ -60,12 +78,22 @@ auditoria = (
     .count().withColumnRenamed("count", "registros")
 )
 validos = com_grade.filter(F.col("codigo_valido").isNotNull())
-municipal = validos.groupBy("ano", "codigo_municipio").count().withColumnRenamed("count", "notificacoes")
+auditoria_desfechos = (
+    validos.groupBy("ano", "classificacao_original", "criterio_original", "evolucao_original")
+    .agg(F.count("*").alias("notificacoes"),
+         F.sum(F.col("caso_confirmado").cast("long")).alias("casos_confirmados"),
+         F.sum(F.col("caso_grave").cast("long")).alias("casos_graves"),
+         F.sum(F.col("obito_dengue").cast("long")).alias("obitos_dengue"))
+)
+metricas = [F.count("*").alias("notificacoes"),
+            F.sum(F.col("caso_confirmado").cast("long")).alias("casos_confirmados"),
+            F.sum(F.col("caso_grave").cast("long")).alias("casos_graves"),
+            F.sum(F.col("obito_dengue").cast("long")).alias("obitos_dengue")]
+municipal = validos.groupBy("ano", "codigo_municipio").agg(*metricas)
 mensal = (
     validos.withColumn("ano_calendario_notificacao", F.year("data_notificacao"))
     .withColumn("mes", F.month("data_notificacao"))
-    .groupBy("ano", "ano_calendario_notificacao", "mes")
-    .count().withColumnRenamed("count", "notificacoes")
+    .groupBy("ano", "ano_calendario_notificacao", "mes").agg(*metricas)
 )
 if municipal.groupBy("ano", "codigo_municipio").count().filter("count > 1").head(1):
     raise ValueError("SINAN municipal contém chave duplicada")
@@ -76,20 +104,25 @@ if {linha["ano"]: linha["meses"] for linha in mesmo_ano.groupBy("ano").agg(
     F.countDistinct("mes").alias("meses")
 ).collect()} != {2010: 12, 2022: 12}:
     raise ValueError("SINAN: esperados 12 meses com notificações em cada ano")
-anuais = {linha["ano"]: linha["total"] for linha in municipal.groupBy("ano").agg(
-    F.sum("notificacoes").alias("total")
-).collect()}
-mensais = {linha["ano"]: linha["total"] for linha in mensal.groupBy("ano").agg(
-    F.sum("notificacoes").alias("total")
-).collect()}
-if anuais != mensais:
-    raise ValueError(f"SINAN: mês civil/desconhecido não reconcilia com ano-fonte: {anuais} != {mensais}")
+for metrica in ("notificacoes", "casos_confirmados", "casos_graves", "obitos_dengue"):
+    anuais = {linha["ano"]: linha["total"] for linha in municipal.groupBy("ano").agg(
+        F.sum(metrica).alias("total")).collect()}
+    mensais = {linha["ano"]: linha["total"] for linha in mensal.groupBy("ano").agg(
+        F.sum(metrica).alias("total")).collect()}
+    if anuais != mensais:
+        raise ValueError(f"SINAN: {metrica} não reconcilia entre ano-fonte e mês: {anuais} != {mensais}")
+if municipal.filter((F.col("casos_graves") > F.col("casos_confirmados"))
+                    | (F.col("obitos_dengue") > F.col("casos_confirmados"))).head(1):
+    raise ValueError("SINAN: grave ou óbito excede casos confirmados")
 
 display(com_grade.groupBy("ano").agg(
     F.count("*").alias("bronze"),
     F.sum(F.col("codigo_valido").isNotNull().cast("long")).alias("municipios_validos"),
 ))
 display(auditoria.orderBy("ano", "motivo", "codigo_original"))
+display(auditoria_desfechos.orderBy(
+    "ano", "classificacao_original", "criterio_original", "evolucao_original"
+))
 
 # COMMAND ----------
 
@@ -97,6 +130,7 @@ saidas = {
     "sinan_municipio_ano_sp": municipal,
     "sinan_sp_mes": mensal,
     "sinan_auditoria_sp": auditoria,
+    "sinan_desfechos_auditoria_sp": auditoria_desfechos,
 }
 for nome, quadro in saidas.items():
     destino = f"{SILVER}.{nome}"
@@ -104,9 +138,7 @@ for nome, quadro in saidas.items():
         detalhe = spark.sql(f"DESCRIBE DETAIL {destino}").first()
         if spark.catalog.getTable(destino).tableType != "MANAGED" or detalhe["format"] != "delta":
             raise ValueError(f"{destino}: destino existente não é Delta gerenciado")
-        if spark.table(destino).dtypes != quadro.dtypes:
-            raise ValueError(f"{destino}: esquema incompatível")
 for nome, quadro in saidas.items():
     destino = f"{SILVER}.{nome}"
-    quadro.write.format("delta").mode("overwrite").saveAsTable(destino)
+    quadro.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(destino)
     print(f"{destino}: {spark.table(destino).count():,} linhas")

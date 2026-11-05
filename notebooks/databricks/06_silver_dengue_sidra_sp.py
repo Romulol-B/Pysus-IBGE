@@ -37,10 +37,13 @@ campos = {
 if campos - set(sidra.columns):
     raise ValueError(f"Indicadores SIDRA ausentes: {sorted(campos - set(sidra.columns))}")
 
+DESFECHOS = ("notificacoes", "casos_confirmados", "casos_graves", "obitos_dengue")
+painel = sidra.join(sinan.select(*chave, *DESFECHOS), chave, "left")
+for desfecho in DESFECHOS:
+    painel = (painel.withColumn(desfecho, F.coalesce(desfecho, F.lit(0)))
+              .withColumn(f"taxa_{desfecho}_100k", F.col(desfecho) * 100000.0 / F.col("populacao")))
 painel = (
-    sidra.join(sinan.select(*chave, "notificacoes"), chave, "left")
-    .withColumn("notificacoes", F.coalesce("notificacoes", F.lit(0)))
-    .withColumn("taxa_notificacoes_100k", F.col("notificacoes") * 100000.0 / F.col("populacao"))
+    painel
     .withColumn("agua_pct", F.when(F.col("ano") == 2010, F.col("c2010_pct_agua_rede_geral"))
                 .otherwise(F.col("c2022_pct_agua_rede_geral_principal")))
     .withColumn("esgoto_pct", F.when(F.col("ano") == 2010,
@@ -54,7 +57,8 @@ painel = (
                 + F.col("c2010_pct_lixo_cacamba_servico_limpeza"))
                 .otherwise(F.col("c2022_pct_lixo_coletado_domicilio")
                 + F.col("c2022_pct_lixo_cacamba")))
-    .select(*chave, "municipio", "populacao", "notificacoes", "taxa_notificacoes_100k",
+    .select(*chave, "municipio", "populacao",
+            *[coluna for desfecho in DESFECHOS for coluna in (desfecho, f"taxa_{desfecho}_100k")],
             "agua_pct", "esgoto_pct", "lixo_pct")
 )
 if painel.filter(F.col("populacao") <= 0).head(1):
@@ -65,7 +69,7 @@ for indicador in ("agua_pct", "esgoto_pct", "lixo_pct"):
 if painel.count() != 1290:
     raise ValueError("O join alterou a grade municipal")
 display(painel.groupBy("ano").agg(F.count("*").alias("municipios"),
-                                    F.sum("notificacoes").alias("notificacoes")))
+                                    *[F.sum(c).alias(c) for c in DESFECHOS]))
 
 # COMMAND ----------
 
@@ -74,7 +78,5 @@ if spark.catalog.tableExists(destino):
     detalhe = spark.sql(f"DESCRIBE DETAIL {destino}").first()
     if spark.catalog.getTable(destino).tableType != "MANAGED" or detalhe["format"] != "delta":
         raise ValueError(f"{destino}: destino existente não é Delta gerenciado")
-    if spark.table(destino).dtypes != painel.dtypes:
-        raise ValueError(f"{destino}: esquema incompatível")
-painel.write.format("delta").mode("overwrite").saveAsTable(destino)
+painel.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(destino)
 print(f"{destino}: {spark.table(destino).count():,} linhas")
