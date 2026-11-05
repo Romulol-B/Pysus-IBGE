@@ -10,14 +10,22 @@
       "task_key": "bronze_sidra",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/01_bronze_sidra",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       }
     },
     {
       "task_key": "silver_sidra",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_sidra",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       },
       "depends_on": [
         {
@@ -29,21 +37,33 @@
       "task_key": "bronze_inmet",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/01_bronze_inmet_sp",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       }
     },
     {
       "task_key": "bronze_sinan",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/01_bronze_sinan_sp",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       }
     },
     {
       "task_key": "silver_sinan",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_sinan_sp",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       },
       "depends_on": [
         {
@@ -58,7 +78,11 @@
       "task_key": "dengue_sidra",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_dengue_sidra_sp",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       },
       "depends_on": [
         {
@@ -73,7 +97,11 @@
       "task_key": "silver_inmet",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_inmet_sp",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       },
       "depends_on": [
         {
@@ -85,7 +113,11 @@
       "task_key": "dengue_clima",
       "notebook_task": {
         "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_dengue_clima_sp",
-        "source": "WORKSPACE"
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       },
       "depends_on": [
         {
@@ -102,8 +134,12 @@
     {
       "task_key": "agregacao",
       "notebook_task": {
-        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/11_gold_agregacao",
-        "source": "WORKSPACE"
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/03_gold_agregacao_sinan_sidra_inmet",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "execucao_id": "{{job.run_id}}",
+          "versao_codigo": "{{job.parameters.versao_codigo}}"
+        }
       },
       "depends_on": [
         {
@@ -113,6 +149,12 @@
           "task_key": "dengue_clima"
         }
       ]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "versao_codigo",
+      "default": ""
     }
   ]
 }

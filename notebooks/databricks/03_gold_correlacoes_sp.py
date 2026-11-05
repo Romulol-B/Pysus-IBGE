@@ -11,12 +11,20 @@
 
 # COMMAND ----------
 
+# MAGIC %run ./setup_pipeline
+
+# COMMAND ----------
+
+for parametro in ("execucao_id", "versao_codigo"):
+    dbutils.widgets.text(parametro, "")
+EXECUCAO, REVISAO = iniciar_execucao(dbutils.widgets.get("execucao_id"), dbutils.widgets.get("versao_codigo"))
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
 SILVER = "dengue_sus.silver"
-municipal = spark.table(f"{SILVER}.dengue_sidra_municipio_ano_sp").toPandas()
-mensal = spark.table(f"{SILVER}.dengue_clima_sp_mes").toPandas()
+municipal = ler_tabela(f"{SILVER}.dengue_sidra_municipio_ano_sp").toPandas()
+mensal = ler_tabela(f"{SILVER}.dengue_clima_sp_mes").toPandas()
 if len(municipal) != 1290 or len(mensal) != 24:
     raise ValueError("Painéis Silver incompletos: esperados 1.290 municípios/ano e 24 meses")
 if municipal.duplicated(["ano", "codigo_municipio"]).any() or mensal.duplicated(["ano", "mes"]).any():
@@ -105,3 +113,5 @@ for eixo in eixos:
 fig.suptitle("Notificações e chuva em SP — meses de 2010 e 2022")
 fig.tight_layout()
 plt.show()
+
+validar_leituras()

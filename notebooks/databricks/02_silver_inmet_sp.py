@@ -12,13 +12,21 @@
 
 # COMMAND ----------
 
+# MAGIC %run ./setup_pipeline
+
+# COMMAND ----------
+
+for parametro in ("execucao_id", "versao_codigo"):
+    dbutils.widgets.text(parametro, "")
+EXECUCAO, REVISAO = iniciar_execucao(dbutils.widgets.get("execucao_id"), dbutils.widgets.get("versao_codigo"))
+
 import re
 import unicodedata
 
 from pyspark.sql import functions as F
 
 SILVER = "dengue_sus.silver"
-bruto = spark.table("dengue_sus.bronze.inmet_sp")
+bruto = ler_tabela("dengue_sus.bronze.inmet_sp")
 
 def chave(nome):
     ascii_nome = "".join(c for c in unicodedata.normalize("NFKD", nome) if not unicodedata.combining(c))
@@ -46,9 +54,10 @@ def numero(nome, minimo, maximo):
 # COMMAND ----------
 
 # A seleção de anos é feita antes de tipar a Bronze completa.
-fonte = bruto.filter(F.trim(F.col("ANO_REFERENCIA")).isin("2010", "2022"))
+fonte = bruto.filter(F.trim(F.col("ANO_REFERENCIA")).isin("2010", "2011", "2022", "2023"))
 display(fonte.select("ANO_REFERENCIA", *datas, *horas).limit(20))
 dados = fonte.select(
+    F.trim(F.col("ANO_REFERENCIA")).alias("ano_fonte"),
     F.upper(F.trim(F.col("CODIGO_WMO"))).alias("estacao"),
     F.coalesce(*[
         F.to_date(F.try_to_timestamp(F.trim(F.col(f"`{nome}`")), F.lit(formato)))
@@ -63,9 +72,14 @@ dados = fonte.select(
     numero(coluna("UMIDADE_RELATIVA_DO_AR"), 0, 100).alias("umidade_pct"),
     numero(coluna("PRECIPITACAO_TOTAL"), 0, 300).alias("precip_mm"),
 )
+# Manter anos-alvo inteiros e somente a leitura de fronteira dos anos seguintes.
+dados = dados.filter(
+    F.col("ano_fonte").isin("2010", "2022")
+    | (F.col("data").isin("2011-01-01", "2023-01-01") & (F.col("hora") == 0))
+).drop("ano_fonte")
 if dados.filter(F.col("data").isNull() | F.col("hora").isNull()
                 | ~F.col("hora").between(0, 23)
-                | ~F.col("estacao").rlike(r"^(?:[A-Z][0-9]{3}|[0-9]{5})$")).head(1):
+                | F.col("estacao").isNull() | ~F.col("estacao").rlike(r"^(?:[A-Z][0-9]{3}|[0-9]{5})$")).head(1):
     raise ValueError("INMET: data, hora ou estação inválida")
 if dados.groupBy("estacao", "data", "hora").count().filter("count > 1").head(1):
     raise ValueError("INMET: observação WMO/data/hora duplicada")
@@ -87,10 +101,13 @@ diario = (
     .agg(F.countDistinct("estacao").alias("n_estacoes_presentes"),
          F.count("temp_c").alias("n_estacoes_temp"), F.avg("temp_c").alias("temp_media_c"),
          F.count("umidade_pct").alias("n_estacoes_umidade"), F.avg("umidade_pct").alias("umidade_media_pct"),
-         F.count("precip_mm").alias("n_estacoes_precip"), F.avg("precip_mm").alias("precip_media_estacoes_mm"))
+         F.count("precip_mm").alias("n_estacoes_precip"), F.avg("precip_mm").alias("precip_media_estacoes_mm"),
+         *[F.sort_array(F.collect_set(F.when(F.col(c).isNotNull(), F.col("estacao"))))
+           .alias(f"estacoes_{c}") for c in ("temp_c", "umidade_pct", "precip_mm")])
     .withColumn("ano", F.year("data"))
     .select("ano", "data", "n_estacoes_presentes", "n_estacoes_temp", "temp_media_c",
-            "n_estacoes_umidade", "umidade_media_pct", "n_estacoes_precip", "precip_media_estacoes_mm")
+            "n_estacoes_umidade", "umidade_media_pct", "n_estacoes_precip", "precip_media_estacoes_mm",
+            "estacoes_temp_c", "estacoes_umidade_pct", "estacoes_precip_mm")
 )
 
 # COMMAND ----------
@@ -111,7 +128,7 @@ mensal = (
     .withColumn("dias_mes", F.dayofmonth(F.last_day(F.make_date("ano", "mes", F.lit(1)))))
     .withColumn("temp_media_c", F.when(F.col("dias_temp") >= 0.8 * F.col("dias_mes"), F.col("temp_bruta_c")))
     .withColumn("umidade_media_pct", F.when(F.col("dias_umidade") >= 0.8 * F.col("dias_mes"), F.col("umidade_bruta_pct")))
-    .withColumn("precip_media_estacoes_mm", F.when(F.col("dias_precip") >= 0.8 * F.col("dias_mes"), F.col("precip_bruta_mm")))
+    .withColumn("precip_media_estacoes_mm", F.when(F.col("dias_precip") == F.col("dias_mes"), F.col("precip_bruta_mm")))
     .drop("temp_bruta_c", "umidade_bruta_pct", "precip_bruta_mm")
 )
 if mensal.count() != 24:
@@ -121,16 +138,4 @@ display(mensal.orderBy("ano", "mes"))
 # COMMAND ----------
 
 saidas = {"inmet_sp_diario": diario, "inmet_sp_mes": mensal}
-for nome, quadro in saidas.items():
-    destino = f"{SILVER}.{nome}"
-    if spark.catalog.tableExists(destino):
-        detalhe = spark.sql(f"DESCRIBE DETAIL {destino}").first()
-        if spark.catalog.getTable(destino).tableType != "MANAGED" or detalhe["format"] != "delta":
-            raise ValueError(f"{destino}: destino existente não é Delta gerenciado")
-        if spark.table(destino).dtypes != quadro.dtypes:
-            raise ValueError(f"{destino}: esquema incompatível")
-for nome, quadro in saidas.items():
-    destino = f"{SILVER}.{nome}"
-    quadro.write.format("delta").mode("overwrite").saveAsTable(destino)
-    print(f"{destino}: {spark.table(destino).count():,} linhas")
-
+publicar({f"{SILVER}.{nome}": quadro for nome, quadro in saidas.items()}, overwriteSchema="true")

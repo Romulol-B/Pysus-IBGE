@@ -26,7 +26,7 @@ from splot.esda import plot_moran, plot_moran_bv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PROCESSED_DIR = PROJECT_ROOT / "sinan/processados"
+PROCESSED_DIR = PROJECT_ROOT / "data/processados"
 DEFAULT_DATA_PATH = PROCESSED_DIR / "sinan_saneamento_2022.parquet"
 DEFAULT_BOUNDARY_PATH = PROCESSED_DIR / "ibge_municipios_2022_min.geojson"
 DEFAULT_FIGURE_DIR = PROJECT_ROOT / "figuras/analise_espacial"

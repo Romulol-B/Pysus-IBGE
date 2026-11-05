@@ -10,3 +10,7 @@ __pycache__/
 docs/
 notebooks/databricks/__pycache__/
 notebooks/databricks/.ipynb_checkpoints/
+AGENTS.md
+relatorio/
+PLANO_DE_CORRECOES.md
+ANALISE_RELATORIO_OBSIDIAN.md

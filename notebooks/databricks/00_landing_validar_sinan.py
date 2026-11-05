@@ -6,7 +6,7 @@
 # MAGIC %md
 # MAGIC # SINAN — validar arquivos de dengue no S3
 # MAGIC Piloto de 2010: lê o Parquet enviado para a Landing e confere residentes em SP.
-# MAGIC A publicação da Bronze histórica será a próxima entrega.
+# MAGIC A Bronze de SP é publicada por `01_bronze_sinan_sp`.
 
 # COMMAND ----------
 
@@ -30,6 +30,7 @@ if not 2000 <= ANO <= 2023:
 
 # COMMAND ----------
 
+spark.sql("CREATE SCHEMA IF NOT EXISTS dengue_sus.landing")
 spark.sql(f"CREATE EXTERNAL VOLUME IF NOT EXISTS {VOLUME} LOCATION '{ORIGEM}'")
 volume = spark.sql(f"DESCRIBE VOLUME {VOLUME}").first()
 if volume["volume_type"] != "EXTERNAL" or volume["storage_location"].rstrip("/") != ORIGEM.rstrip("/"):

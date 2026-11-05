@@ -13,18 +13,32 @@
 # MAGIC Casos graves harmonizam as classificações de cada época e exigem critério
 # MAGIC laboratorial ou clínico-epidemiológico. Óbitos exigem dengue confirmada e
 # MAGIC evolução `2` (óbito pelo agravo); não representam pessoas deduplicadas.
+# MAGIC Flags indeterminadas são contadas separadamente em `*_desconhecidos`;
+# MAGIC zero elegíveis não reclassifica esses registros como negativos.
 
 # COMMAND ----------
+
+# MAGIC %run ./setup_pipeline
+
+# COMMAND ----------
+
+for parametro in ("execucao_id", "versao_codigo"):
+    dbutils.widgets.text(parametro, "")
+EXECUCAO, REVISAO = iniciar_execucao(dbutils.widgets.get("execucao_id"), dbutils.widgets.get("versao_codigo"))
 
 from pyspark.sql import functions as F
 
 BRONZE = "dengue_sus.bronze"
 SILVER = "dengue_sus.silver"
 ANOS = (2010, 2022)
-populacao = spark.table(f"{SILVER}.sidra_populacao_sp").filter(F.col("ano").isin(*ANOS))
+populacao = ler_tabela(f"{SILVER}.sidra_populacao_sp").filter(F.col("ano").isin(*ANOS))
 grade = populacao.select("ano", "codigo_municipio")
-if grade.count() != 645 * len(ANOS) or grade.distinct().count() != grade.count():
-    raise ValueError("Grade SIDRA de SP deve ter 645 códigos únicos em cada ano")
+exigir_chave(grade, ["ano", "codigo_municipio"], "População SP")
+exigir_anos(grade, "População SP", 645)
+
+def codigo(nome):
+    valor = F.trim(F.col(nome).cast("string"))
+    return F.when(F.length(valor) > 0, valor)
 
 # COMMAND ----------
 
@@ -33,24 +47,26 @@ for ano in ANOS:
     origem = f"{BRONZE}.sinan_sp_{ano}"
     if not spark.catalog.tableExists(origem):
         raise ValueError(f"Execute primeiro a Bronze: {origem}")
-    bruto = spark.table(origem)
+    bruto = ler_tabela(origem)
+    if not bruto.head(1):
+        raise ValueError(f"{origem}: fonte vazia; não inferir ausência de notificações")
     obrigatorias = {"ID_MN_RESI", "DT_NOTIFIC", "CLASSI_FIN", "CRITERIO", "EVOLUCAO"}
     if obrigatorias - set(bruto.columns):
         raise ValueError(f"{origem}: campos SINAN ausentes: {sorted(obrigatorias - set(bruto.columns))}")
-    codigo = F.trim(F.col("ID_MN_RESI").cast("string"))
-    classificacao = F.trim(F.col("CLASSI_FIN").cast("string"))
-    criterio = F.trim(F.col("CRITERIO").cast("string"))
-    evolucao = F.trim(F.col("EVOLUCAO").cast("string"))
+    municipio = codigo("ID_MN_RESI")
+    classificacao = codigo("CLASSI_FIN")
+    criterio = codigo("CRITERIO")
+    evolucao = codigo("EVOLUCAO")
     confirmacoes = ["1", "2"]
     classes_dengue = ["1", "2", "3", "4"] if ano == 2010 else ["10", "11", "12"]
     classes_graves = ["2", "3", "4"] if ano == 2010 else ["11", "12"]
     quadro = bruto.select(
-        F.lit(ano).alias("ano"), codigo.alias("codigo_original"),
+        F.lit(ano).alias("ano"), municipio.alias("codigo_original"),
         F.col("DT_NOTIFIC").cast("string").alias("data_original"),
         classificacao.alias("classificacao_original"),
         criterio.alias("criterio_original"), evolucao.alias("evolucao_original"),
-        F.when(codigo.rlike(r"^\d{7}$"), F.substring(codigo, 1, 6))
-        .when(codigo.rlike(r"^\d{6}$"), codigo).alias("codigo_municipio"),
+        F.when(municipio.rlike(r"^\d{7}$"), F.substring(municipio, 1, 6))
+        .when(municipio.rlike(r"^\d{6}$"), municipio).alias("codigo_municipio"),
         F.coalesce(
             F.to_date(F.expr("try_to_timestamp(trim(cast(`DT_NOTIFIC` as string)), 'yyyy-MM-dd')")),
             F.to_date(F.expr("try_to_timestamp(trim(cast(`DT_NOTIFIC` as string)), 'yyyyMMdd')")),
@@ -78,33 +94,27 @@ auditoria = (
     .count().withColumnRenamed("count", "registros")
 )
 validos = com_grade.filter(F.col("codigo_valido").isNotNull())
-auditoria_desfechos = (
-    validos.groupBy("ano", "classificacao_original", "criterio_original", "evolucao_original")
-    .agg(F.count("*").alias("notificacoes"),
-         F.sum(F.col("caso_confirmado").cast("long")).alias("casos_confirmados"),
-         F.sum(F.col("caso_grave").cast("long")).alias("casos_graves"),
-         F.sum(F.col("obito_dengue").cast("long")).alias("obitos_dengue"))
-)
-metricas = [F.count("*").alias("notificacoes"),
-            F.sum(F.col("caso_confirmado").cast("long")).alias("casos_confirmados"),
-            F.sum(F.col("caso_grave").cast("long")).alias("casos_graves"),
-            F.sum(F.col("obito_dengue").cast("long")).alias("obitos_dengue")]
+flags = {"casos_confirmados": "caso_confirmado", "casos_graves": "caso_grave", "obitos_dengue": "obito_dengue"}
+metricas = [F.count("*").alias("notificacoes")]
+for nome, flag in flags.items():
+    metricas.extend((F.count(F.when(F.col(flag), 1)).alias(nome),
+                     F.count(F.when(F.col(flag).isNull(), 1)).alias(f"{nome}_desconhecidos")))
+auditoria_desfechos = validos.groupBy(
+    "ano", "classificacao_original", "criterio_original", "evolucao_original"
+).agg(*metricas)
 municipal = validos.groupBy("ano", "codigo_municipio").agg(*metricas)
 mensal = (
     validos.withColumn("ano_calendario_notificacao", F.year("data_notificacao"))
     .withColumn("mes", F.month("data_notificacao"))
     .groupBy("ano", "ano_calendario_notificacao", "mes").agg(*metricas)
 )
-if municipal.groupBy("ano", "codigo_municipio").count().filter("count > 1").head(1):
-    raise ValueError("SINAN municipal contém chave duplicada")
-if mensal.groupBy("ano", "ano_calendario_notificacao", "mes").count().filter("count > 1").head(1):
-    raise ValueError("SINAN mensal contém chave duplicada")
+exigir_anos(municipal, "SINAN municipal")
 mesmo_ano = mensal.filter(F.col("ano_calendario_notificacao") == F.col("ano"))
 if {linha["ano"]: linha["meses"] for linha in mesmo_ano.groupBy("ano").agg(
     F.countDistinct("mes").alias("meses")
 ).collect()} != {2010: 12, 2022: 12}:
     raise ValueError("SINAN: esperados 12 meses com notificações em cada ano")
-for metrica in ("notificacoes", "casos_confirmados", "casos_graves", "obitos_dengue"):
+for metrica in CONTAGENS:
     anuais = {linha["ano"]: linha["total"] for linha in municipal.groupBy("ano").agg(
         F.sum(metrica).alias("total")).collect()}
     mensais = {linha["ano"]: linha["total"] for linha in mensal.groupBy("ano").agg(
@@ -132,13 +142,4 @@ saidas = {
     "sinan_auditoria_sp": auditoria,
     "sinan_desfechos_auditoria_sp": auditoria_desfechos,
 }
-for nome, quadro in saidas.items():
-    destino = f"{SILVER}.{nome}"
-    if spark.catalog.tableExists(destino):
-        detalhe = spark.sql(f"DESCRIBE DETAIL {destino}").first()
-        if spark.catalog.getTable(destino).tableType != "MANAGED" or detalhe["format"] != "delta":
-            raise ValueError(f"{destino}: destino existente não é Delta gerenciado")
-for nome, quadro in saidas.items():
-    destino = f"{SILVER}.{nome}"
-    quadro.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(destino)
-    print(f"{destino}: {spark.table(destino).count():,} linhas")
+publicar({f"{SILVER}.{nome}": quadro for nome, quadro in saidas.items()}, overwriteSchema="true")

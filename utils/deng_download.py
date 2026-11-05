@@ -9,7 +9,7 @@ import zipfile
 from datetime import date
 from pathlib import Path
 
-SOURCE_DIR = Path(__file__).resolve().parents[1] / "sinan"
+SOURCE_DIR = Path(__file__).resolve().parents[1] / "data/raw/sinan"
 OFFICIAL_CSV_YEARS = {2007, 2008, 2009, 2012}
 
 

@@ -13,13 +13,21 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install geopandas libpysal esda statsmodels requests matplotlib
+# MAGIC %pip install geopandas==1.1.4 libpysal==4.15.0 esda==2.10.0 statsmodels==0.14.6 requests==2.34.2 matplotlib==3.11.1
 
 # COMMAND ----------
 
 dbutils.library.restartPython()
 
 # COMMAND ----------
+
+# MAGIC %run ./setup_pipeline
+
+# COMMAND ----------
+
+for parametro in ("execucao_id", "versao_codigo"):
+    dbutils.widgets.text(parametro, "")
+EXECUCAO, REVISAO = iniciar_execucao(dbutils.widgets.get("execucao_id"), dbutils.widgets.get("versao_codigo"))
 
 import hashlib
 from importlib.metadata import version
@@ -65,7 +73,7 @@ display(pd.DataFrame({"pacote": ["geopandas", "libpysal", "esda"],
 
 # COMMAND ----------
 
-dados = spark.table(TABELA).filter(F.col("ano").isin(*ANOS)).limit(1291).toPandas()
+dados = ler_tabela(TABELA).filter(F.col("ano").isin(*ANOS)).limit(1291).toPandas()
 dados["codigo_municipio"] = dados["codigo_municipio"].astype(str).str.strip()
 if len(dados) != 1290 or dados.duplicated(["ano", "codigo_municipio"]).any():
     raise ValueError("Esperados 645 municípios únicos por ano.")
@@ -108,7 +116,8 @@ print({"fonte": TABELA, "malha": URL_MALHA,
 # MAGIC Moran bivariado relaciona **taxa local (x)** com **saneamento dos vizinhos (Wy)**;
 # MAGIC não equivale a Pearson nem é simétrico. KNN é direcionado e padronizado por linha.
 # MAGIC Valores constantes não são testados. Os pseudo-p-valores de permutação
-# MAGIC `p_sim` seguem a convenção do PySAL. Aplicamos Benjamini–Hochberg aos testes
+# MAGIC `p_sim` seguem a convenção do PySAL. No LISA, `alternative="directed"`
+# MAGIC explicita a hipótese direcional usada por padrão na versão fixada. Aplicamos Benjamini–Hochberg aos testes
 # MAGIC globais em conjunto e aos 645 testes locais de cada combinação ano/desfecho.
 # MAGIC Referências: [Moran BV](https://pysal.org/esda/stable/generated/esda.Moran_BV.html)
 # MAGIC e [Moran local](https://pysal.org/esda/stable/generated/esda.Moran_Local.html).
@@ -137,7 +146,7 @@ for ano in ANOS:
         local["cluster"] = "Sem variância"
         if np.ptp(x) > 0:
             teste = Moran_Local(x, pesos, permutations=PERMUTACOES, seed=SEMENTE,
-                                n_jobs=1, keep_simulations=False)
+                                n_jobs=1, keep_simulations=False, alternative="directed")
             local["I_local"], local["p_sim"] = teste.Is, teste.p_sim
             local["p_fdr"] = multipletests(teste.p_sim, method="fdr_bh")[1]
             local["cluster"] = np.where(local.p_fdr <= ALFA,
@@ -217,3 +226,7 @@ for desfecho, titulo in DESFECHOS.items():
 # MAGIC As três tabelas `globais`, `comparacao` e `locais` ficam disponíveis na sessão.
 # MAGIC Clima não entra na análise municipal porque a Silver climática tem apenas
 # MAGIC um valor para toda a UF por mês. Correlação espacial não demonstra causalidade.
+
+# COMMAND ----------
+
+validar_leituras()

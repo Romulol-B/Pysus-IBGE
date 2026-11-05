@@ -11,16 +11,25 @@
 
 # COMMAND ----------
 
+# MAGIC %run ./setup_pipeline
+
+# COMMAND ----------
+
+for parametro in ("execucao_id", "versao_codigo"):
+    dbutils.widgets.text(parametro, "")
+EXECUCAO, REVISAO = iniciar_execucao(dbutils.widgets.get("execucao_id"), dbutils.widgets.get("versao_codigo"))
+
 from pyspark.sql import functions as F
 
 SILVER = "dengue_sus.silver"
-sidra = spark.table(f"{SILVER}.sidra_municipio_ano_sp").filter(F.col("ano").isin(2010, 2022))
-sinan = spark.table(f"{SILVER}.sinan_municipio_ano_sp")
+sidra = ler_tabela(f"{SILVER}.sidra_municipio_ano_sp").filter(F.col("ano").isin(2010, 2022))
+sinan = ler_tabela(f"{SILVER}.sinan_municipio_ano_sp")
 chave = ["ano", "codigo_municipio"]
-if sidra.count() != 1290 or sidra.select(*chave).distinct().count() != 1290:
-    raise ValueError("SIDRA deve conter 645 municípios únicos em 2010 e 2022")
-if sinan.select(*chave).distinct().count() != sinan.count():
-    raise ValueError("SINAN municipal contém chave duplicada")
+exigir_chave(sidra, chave, "SIDRA")
+exigir_anos(sidra, "SIDRA", 645)
+exigir_chave(sinan, chave, "SINAN")
+exigir_anos(sinan, "SINAN")
+validar_contagens(sinan)
 if sinan.join(sidra.select(*chave), chave, "left_anti").head(1):
     raise ValueError("SINAN contém municípios fora da grade SIDRA")
 
@@ -37,11 +46,15 @@ campos = {
 if campos - set(sidra.columns):
     raise ValueError(f"Indicadores SIDRA ausentes: {sorted(campos - set(sidra.columns))}")
 
-DESFECHOS = ("notificacoes", "casos_confirmados", "casos_graves", "obitos_dengue")
-painel = sidra.join(sinan.select(*chave, *DESFECHOS), chave, "left")
-for desfecho in DESFECHOS:
-    painel = (painel.withColumn(desfecho, F.coalesce(desfecho, F.lit(0)))
-              .withColumn(f"taxa_{desfecho}_100k", F.col(desfecho) * 100000.0 / F.col("populacao")))
+painel = sidra.join(
+    sinan.select(*chave, *CONTAGENS).withColumn("tem_notificacao_registrada", F.lit(True)), chave, "left"
+).withColumn("tem_notificacao_registrada", F.coalesce("tem_notificacao_registrada", F.lit(False)))
+for nome in CONTAGENS:
+    painel = painel.withColumn(nome, F.when(~F.col("tem_notificacao_registrada"), F.lit(0)).otherwise(F.col(nome)))
+painel = painel.withColumn("situacao_registro_sinan", F.when(
+    F.col("tem_notificacao_registrada"), "com_notificacao_registrada").otherwise("sem_notificacao_registrada"))
+for nome in DESFECHOS:
+    painel = painel.withColumn(f"taxa_{nome}_100k", F.col(nome) * 100000.0 / F.col("populacao"))
 painel = (
     painel
     .withColumn("agua_pct", F.when(F.col("ano") == 2010, F.col("c2010_pct_agua_rede_geral"))
@@ -57,11 +70,12 @@ painel = (
                 + F.col("c2010_pct_lixo_cacamba_servico_limpeza"))
                 .otherwise(F.col("c2022_pct_lixo_coletado_domicilio")
                 + F.col("c2022_pct_lixo_cacamba")))
-    .select(*chave, "municipio", "populacao",
+    .select(*chave, "municipio", "populacao", *DESCONHECIDOS,
+            "tem_notificacao_registrada", "situacao_registro_sinan",
             *[coluna for desfecho in DESFECHOS for coluna in (desfecho, f"taxa_{desfecho}_100k")],
             "agua_pct", "esgoto_pct", "lixo_pct")
 )
-if painel.filter(F.col("populacao") <= 0).head(1):
+if painel.filter(F.col("populacao").isNull() | (F.col("populacao") <= 0)).head(1):
     raise ValueError("População não positiva")
 for indicador in ("agua_pct", "esgoto_pct", "lixo_pct"):
     if painel.filter(F.col(indicador).isNull() | ~F.col(indicador).between(0, 100.1)).head(1):
@@ -74,9 +88,4 @@ display(painel.groupBy("ano").agg(F.count("*").alias("municipios"),
 # COMMAND ----------
 
 destino = f"{SILVER}.dengue_sidra_municipio_ano_sp"
-if spark.catalog.tableExists(destino):
-    detalhe = spark.sql(f"DESCRIBE DETAIL {destino}").first()
-    if spark.catalog.getTable(destino).tableType != "MANAGED" or detalhe["format"] != "delta":
-        raise ValueError(f"{destino}: destino existente não é Delta gerenciado")
-painel.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(destino)
-print(f"{destino}: {spark.table(destino).count():,} linhas")
+publicar({destino: painel}, overwriteSchema="true")

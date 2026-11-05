@@ -19,8 +19,8 @@ import polars as pl
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SINAN_DIR = PROJECT_ROOT / "sinan"
-PROCESSED_DIR = SINAN_DIR / "processados"
+SINAN_DIR = PROJECT_ROOT / "data/raw/sinan"
+PROCESSED_DIR = PROJECT_ROOT / "data/processados"
 SIDRA_API = "https://apisidra.ibge.gov.br/values"
 
 CENSUS_MUNICIPALITY_COUNTS = {2010: 5_565, 2022: 5_570}

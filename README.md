@@ -1,203 +1,80 @@
-# PySUS–IBGE: dengue e saneamento básico
+# PySUS–IBGE: dengue, saneamento e clima
 
-Projeto da disciplina SCC0957 — Prática de Ciência de Dados II. O objetivo é
-produzir perfis municipais de dengue pelo município de residência e investigar
-associações exploratórias com condições domiciliares de saneamento.
+Projeto da disciplina SCC0957 — Prática de Ciência de Dados II. O fluxo atual usa Databricks para analisar **São Paulo em 2010 e 2022**. Os módulos locais em `utils/` conservam o processamento nacional histórico, com contratos analíticos distintos.
 
-## Notebooks
+## Fluxo Databricks
 
-- `sinan.ipynb`: exploração inicial do SINAN e visualizações descritivas.
-- `seneamento.ipynb`: análise das tabelas municipais do SIDRA antes do merge.
-- `integracao_sinan_saneamento.ipynb`: harmonização do SINAN, auditoria e
-  integração municipal nos anos compatíveis.
-- `analise_espacial_pysal.ipynb`: EDA geográfica de 2022 com pesos espaciais,
-  Moran global/bivariado, LISA e mapas municipais.
-- [`agregacao_sinan_ibge_inmet_uf_mes.ipynb`](notebooks/Agregacao/DENGUE+IBGE+IMNET/agregacao_sinan_ibge_inmet_uf_mes.ipynb):
-  integração SINAN–SIDRA–INMET por UF e mês de calendário, com resumo anual,
-  auditorias, séries temporais, dispersões integradas e cobertura meteorológica.
-  Começa em 2010 e também aceita 2022 como recorte separado. Consulta os percentuais
-  estaduais diretamente no SIDRA e usa painel fixo de estações INMET. Sem o Parquet
-  climático, executa a parte SINAN–IBGE e identifica as variáveis climáticas ausentes.
-  Os dados e gráficos HTML ficam em `sinan/processados/agregacao_tres_fontes/<ano>/`.
+Os notebooks estão em [notebooks/databricks](notebooks/databricks/). O prefixo indica a camada: `00_landing`, `01_bronze`, `02_silver`, `03_gold`. As dependências determinam a ordem dentro de cada camada.
 
-## Fontes
+| Etapa | Notebook | Dependência |
+|---|---|---|
+| Configuração | `setup_ambiente.ipynb` | Unity Catalog, credencial e localização externa S3 |
+| Conferência das entradas | `00_landing_validar_sinan.py`, `00_landing_validar_inmet.py` | Volumes e arquivos |
+| Bronze | `01_bronze_sidra.ipynb`, `01_bronze_sinan_sp.py`, `01_bronze_inmet_sp.py` | API SIDRA e Landing |
+| Silver SIDRA | `02_silver_sidra.ipynb` | Bronze SIDRA; auxiliar `02_silver_padronizar_municipios.ipynb` |
+| Silver SINAN | `02_silver_sinan_sp.py` | Bronze SINAN e Silver SIDRA |
+| Silver INMET | `02_silver_inmet_sp.py` | Bronze INMET |
+| Painel municipal | `02_silver_dengue_sidra_sp.py` | Silver SINAN e SIDRA |
+| Painel mensal | `02_silver_dengue_clima_sp.py` | Silver SINAN, SIDRA e INMET |
+| Relatório Gold | `03_gold_agregacao_sinan_sidra_inmet.ipynb` | Ambos os painéis |
+| Análises complementares | `03_gold_correlacoes_sp.py`, `03_gold_correlacoes_geograficas_pysal_sp.py` | Painéis; espacial usa somente o municipal |
 
-- SINAN/DATASUS: notificações de dengue de 2000 a 2023, obtidas com PySUS.
-- SIDRA 136: população residente do Censo 2010, variável 93 e total da
-  classificação de cor ou raça (`c86/0`).
-- SIDRA 3218: condições domiciliares do Censo 2010.
-- SIDRA 6803, 6805 e 6892: água, esgotamento e lixo no Censo 2022.
-- SIDRA 6579 e 4709: estimativas populacionais e população do Censo 2022.
-- API de Malhas do IBGE: geometria municipal simplificada usada na análise
-  espacial; o arquivo é mantido no cache não versionado.
+O [job de nove tarefas](jobs/sinan_sidra_inmet_agregacao_sp.job.json) cobre Bronze, Silver e agregação. Setup, conferências Landing e análises complementares são etapas separadas. Ajuste o prefixo dos caminhos do workspace ao importar o JSON; os nomes finais correspondem aos arquivos locais.
 
-O clima é preparado por `utils.inmet_pipeline` e integrado por
-`utils.climate_integration`. Ele permanece separado dos contratos municipais
-de saneamento: não se misturam escalas UF–dia e município–ano na comparação
-de coeficientes. O novo notebook de agregação usa `utils.aggregate_sources`
-para reunir as fontes em uma escala comum UF–mês, com saneamento censitário
-constante no ano e auditoria própria pela data efetiva da notificação.
+### Preparação e execução
 
-## Execução
+1. Importe os notebooks na mesma pasta do workspace, **incluindo `setup_pipeline.py`**, usado por `%run` para as validações e publicações comuns.
+2. Execute `setup_ambiente`. A identidade executora precisa poder criar catálogo/schemas/volumes, ler a Landing e escrever tabelas. A credencial e a localização externa S3 devem estar configuradas previamente. `DESTINATARIO` é opcional e concede leitura na Silver depois da criação dos objetos.
+3. Disponibilize `DENGBR10.parquet` e `DENGBR22.parquet` em `/Volumes/dengue_sus/landing/sinan_s3/`. Copie junto `manifesto_download.json`, quando disponível. A Bronze verifica checksum, nome, origem e contagem e rejeita coortes misturadas.
+4. Disponibilize `INMET_dataset_agregado.csv` em `/Volumes/dengue_sus/landing/inmet/`, junto do manifesto `INMET_dataset_agregado.publication.json` da mesma publicação. Uma marca `.publication.json.pending` bloqueia a carga. O CSV deve conter os anos-alvo e, quando disponíveis, as leituras de 00:00 de 01/01/2011 e 01/01/2023.
+5. Execute as conferências Landing. A SINAN usa 2010 por padrão; a Bronze exige os dois anos. Arquivos sem manifesto recebem checksum de conteúdo e indicação **`manifesto_verificado=false`**; sua origem histórica não é inferida.
+6. Preencha o parâmetro de job **`versao_codigo`** com a revisão dos notebooks importados, por exemplo um commit ou identificador de revisão local. É uma declaração do operador, não uma verificação automática do código no workspace. `execucao_id` recebe `{{job.run_id}}`.
+7. Para execução manual, preencha os widgets `execucao_id` e `versao_codigo` com os mesmos valores em todas as tarefas. Use um identificador novo para cada carga completa. Tabelas antigas sem metadados exigem uma nova carga desde a Bronze.
+8. Confira as validações e auditorias antes de interpretar os resultados. Para executar somente a Gold sobre uma carga existente, reutilize a identificação dessa carga. Após reexecutar um produtor, reexecute seus consumidores.
+
+As configurações serverless existentes usam ambiente 6. As células `%pip` fixam versões dos pacotes instalados pelos notebooks; o `uv.lock` configura o ambiente **local**, não o Databricks. A resolução dessas dependências e a execução integral precisam ser verificadas no compute de destino.
+
+A conferência Landing INMET usa `/Volumes/dengue_sus/landing/inmet/_validacao/conexao.csv`. Envie esse arquivo com o conteúdo abaixo antes de executar `00_landing_validar_inmet`:
+
+```csv
+id;fonte
+1;INMET
+2;INMET
+```
+
+### Contratos e consistência
+
+- **SINAN:** residência, ano-fonte e uma notificação por linha, sem deduplicação de pessoas. Confirmados exigem classificação do período e `CRITERIO` 1/2. Graves: classes 2/3/4 em 2010 e 11/12 em 2022; óbitos: confirmados com `EVOLUCAO=2`. O mensal com clima inclui somente datas do mesmo ano-fonte.
+- **Ausências:** contagens elegíveis e `*_desconhecidos` são separadas. Desconhecido significa regra indeterminada por campo nulo/vazio; outros códigos informados continuam na auditoria. Fonte anual vazia bloqueia o processamento. A grade municipal recebe zero somente quando não existe notificação vinculada, com flags de vínculo explícitas.
+- **SIDRA:** população do Censo como denominador; categorias de saneamento próprias de cada Censo, sem harmonização temporal presumida. Grade esperada: 645 municípios por ano.
+- **INMET:** estações disponíveis, dias UTC, 24 leituras válidas para chuva diária e 18 para temperatura/umidade. Chuva mensal exige todos os dias; médias mensais exigem 80%. A leitura de 00:00 do ano seguinte completa o dia anterior quando existe. A Silver diária registra os WMO utilizados por variável.
+- **Espacial:** malha 2022 nos dois anos, KNN 8 padronizado por linha, 9.999 permutações, semente 42, taxas brutas e BH. LISA explicita `alternative="directed"`. É um produto distinto do histórico local com BY e hipótese bilateral.
+
+`setup_pipeline` registra execução, revisão declarada, fontes e versões Delta em `userMetadata` no histórico das tabelas existentes. Os consumidores verificam se todas as saídas do produtor pertencem ao mesmo lote, fixam as versões lidas e recusam entradas substituídas ou inconsistentes. **Não há transação única entre tabelas nem rollback do conjunto.** Uma falha parcial deixa saídas físicas que os leitores deste projeto bloqueiam; leitores externos precisam aplicar as mesmas verificações. Não execute cargas manuais concorrentes sobre as mesmas tabelas.
+
+A Gold é uma camada de relatórios, sem novas tabelas de controle ou tabelas Gold. Configure `DESTINO` no notebook de agregação para exportar CSV, HTML e metadados para um Volume. Cada exportação cria uma pasta nova e grava `_SUCCESS` por último. Pastas sem essa marca estão incompletas. Sem `DESTINO`, os resultados ficam apenas na sessão.
+
+## Reprodução local e histórico
 
 ```bash
 uv sync
+uv run python -m utils.reconcile_databricks
+uv run python -m unittest discover -s tests -v
+```
+
+A reconciliação lê `data/raw/sinan/DENGBR10.parquet`, `DENGBR22.parquet` e `data/processados/ibge_populacao_municipio_ano.parquet`. Produz `reconciliacao_contratos_sp.csv` e um JSON de checksums, sem alterar as fontes. Os argumentos `--sinan`, `--populacao` e `--output` permitem outros caminhos. Ela reproduz as regras sobre os mesmos arquivos; não executa Spark nem reconstrói o calendário com arquivos vizinhos.
+
+Para refazer o **pipeline histórico nacional**, com acesso às fontes:
+
+```bash
 uv run python -m utils.deng_download --start 2000 --end 2023
 uv run python -m utils.analysis_pipeline --refresh-ibge --allow-undated
-uv run python -m utils.spatial_analysis
-uv run jupyter lab
 ```
 
-Na primeira execução sem cache, use `--refresh-ibge` para consultar o SIDRA. Os
-arquivos gerados ficam em `sinan/processados/`, diretório deliberadamente não
-versionado junto com os dados brutos.
+Python 3.13+ e dependências estão em `pyproject.toml`/`uv.lock`. Os destinos padrão acompanham a organização existente: brutos em `data/raw/sinan/`, resultados em `data/processados/`; dados permanecem ignorados pelo Git. O downloader registra coorte e checksums, usa DadosGov e complementa 2007–2009/2012 com CSVs oficiais. FTP é opção explícita de outra coorte. `--allow-undated` preserva datas ilegíveis no ano-fonte com auditoria.
 
-Execute os comandos na raiz. São necessários Python 3.13 ou superior, dependências de
-`pyproject.toml`, acesso ao DATASUS/SIDRA/IBGE ou caches verificados, e todos os
-arquivos anuais esperados em `sinan/DENGBRxx.parquet`. O download inclui 2023
-e usa por padrão a coorte DadosGov, com cache isolado e manifesto incremental
-de contagens, origem e checksums. Os anos 2007–2009 e 2012, ausentes do catálogo
-DadosGov do PySUS, vêm dos CSVs ZIP oficiais do Ministério da Saúde, sem troca
-automática para a coorte FTP. Reexecuções reutilizam apenas anos verificados.
-`--origin FTP` é uma opção explícita para outra coorte: seus totais não são
-intercambiáveis com os resultados históricos deste repositório.
-Anos ainda abertos, arquivos vazios, campos obrigatórios ausentes e datas
-ilegíveis interrompem a análise por padrão. A coorte original contém uma data
-corrompida em 2008: `--allow-undated` permite conservar essa notificação somente
-no período-fonte anual, com auditoria individual e mês civil desconhecido no
-CSV mensal, sem inventar uma data. Gráficos por data excluem esse registro e
-informam a quantidade excluída. Os contratos anuais mantêm o ano do arquivo
-como período de referência (`periodo_referencia = ano_fonte_sinan`), por escolha
-explícita: não são necessariamente anos civis completos. Divergências de
-`NU_ANO` e datas em anos adjacentes são auditadas e preservadas. As taxas usam
-a população do ano de referência; são razões descritivas do período da fonte,
-não incidências de um ano civil reconstituído. O CSV mensal inclui o ano civil
-real da notificação em `ano_calendario_notificacao`, sem excluir essas datas.
-Ausência de
-fonte anual não é evidência de zero notificações.
+O fluxo histórico confirma pela classificação, sem exigir o mesmo critério Spark. Sua integração mensal pode incorporar outros anos-fonte; a agregação climática usa painel fixo. A análise espacial local usa BY, LISA bilateral, 999 permutações por padrão e sensibilidades populacionais. Coeficientes nacionais de execuções anteriores não validam os resultados atuais de SP. Os geradores `create_analysis_notebooks` e `create_spatial_notebook` são legados e **não fazem parte do fluxo recomendado**: ainda contêm destinos de notebooks retirados.
 
-As classificações finais são `CON_CLASSI` até 2006 e `CLASSI_FIN` nos demais
-anos; `DENGUE` na ficha antiga é antecedente de doença e nunca é usado como
-confirmação. A série é de notificações confirmadas segundo essas fichas, não
-uma contagem de pessoas únicas nem uma estimativa de todas as infecções.
+As instruções e contratos detalhados ficam no [relatório Obsidian](relatorio/README.md) e o estado das correções em [PLANO_DE_CORRECOES.md](PLANO_DE_CORRECOES.md). Guias antigos em `docs/` são arquivos locais ignorados; a documentação compartilhada é README + `relatorio/`.
 
-Para clima, organize CSVs INMET em pastas por ano e execute:
-
-```bash
-uv run python -m utils.inmet_pipeline base-INM --csv-output data/INMET_dataset_agregado.csv
-uv run python -m utils.climate_integration data/INMET_dataset_agregado.parquet --year 2010
-```
-
-A ingestão preserva valores como texto, une schemas explicitamente por nome,
-normaliza variantes de cabeçalho, reconcilia contagens e gera auditoria por
-arquivo. Nenhum erro de parsing é ignorado. O cache UTF-8 é identificado e
-validado por checksum; falhas preservam a saída anterior. A visão de limpeza
-publica flags de valores rejeitados e mantém os originais. Limites físicos
-são triagem, não prova de qualidade. Direção do vento usa estatística circular.
-Horas e dias climáticos são UTC; a data administrativa de notificação não é
-uma medida exata da exposição nem é convertida artificialmente em UTC.
-
-A precipitação diária exige 24 intervalos horários válidos por estação.
-Cada leitura é atribuída ao início da hora precedente: 00:00 pertence à
-última hora do dia anterior. O recorte anual inclui a leitura de 00:00 de
-1º de janeiro do ano seguinte quando disponível; sem ela, a precipitação
-do último dia permanece nula. Temperatura e
-umidade exigem ao menos 18. As médias por UF incluem apenas estações válidas
-para cada variável e informam seus números; dias sem medição permanecem
-nulos. Contagens de WMO, completude e limites de triagem não garantem
-representatividade espacial. As correlações são descritivas dentro de UF,
-com o mesmo desfecho e dias completos comuns; sazonalidade, atrasos e
-dependência temporal impedem interpretação causal. Não se conclui que
-saneamento explica mais que clima comparando coeficientes de escalas distintas.
-
-A sensibilidade à composição da rede usa, por padrão, três estações fixas
-por UF/ano, escolhidas exclusivamente pela cobertura meteorológica. Cada uma
-precisa ter as três variáveis válidas em pelo menos 80% dos dias do calendário
-solicitado. A lista de WMO aparece em `estacoes_painel_fixo`. A média fixa só
-é publicada nos dias em que todas as estações selecionadas têm dados válidos
-para a variável; os pesos não mudam quando uma estação falha. Configure
-`--fixed-stations` e `--minimum-station-coverage` antes da análise. O painel
-fixo é uma sensibilidade de composição, não uma amostra representativa do estado.
-As tabelas de correlação comparam `estacoes_disponiveis` e `painel_fixo` nos
-mesmos dias completos e preservam UFs sem painel elegível com n=0 e r nulo.
-
-Parquet e CSV INMET são preparados antes de substituir qualquer saída.
-Falhas de publicação restauram as versões anteriores. Um manifesto
-`.publication.json` registra os checksums do conjunto; a marca `.pending`
-sinaliza publicação interrompida e deve ser resolvida antes de consumir os
-dados (backups são preservados em caso de encerramento abrupto). A integração
-climática verifica o manifesto quando presente. Consumidores externos, inclusive
-a landing Databricks, devem usar os arquivos da mesma publicação. Ao atualizar,
-mantenha os mesmos destinos, incluindo o argumento `--csv-output` usado antes.
-
-O scanner pode receber `years=[2010]`; a integração climática abre somente
-o ano solicitado. Arquivos de outros anos não são validados nesse recorte.
-
-O diretório `data/` é versionado apenas com o marcador `.gitkeep`. Os dados
-locais dentro dele são ignorados pelo Git.
-
-## Contratos produzidos
-
-- `sinan_municipio_ano.parquet`
-- `sinan_populacao_municipio_ano.parquet`
-- `sinan_saneamento_2010.parquet`
-- `sinan_saneamento_2022.parquet`
-
-Os resultados espaciais tabulares ficam em
-`sinan/processados/analise_espacial/`. As cinco visualizações exportadas ficam
-em `figuras/analise_espacial/`.
-
-A malha é solicitada explicitamente para 2022 e usa o cache
-`ibge_municipios_2022_min.geojson`, acompanhado de `.metadata.json` com ano,
-URL e SHA-256. Caches antigos sem proveniência não são aceitos. Para uma malha
-local fornecida manualmente, documente o ano 2022 e seu checksum nesse mesmo
-formato; mudar o nome do arquivo não estabelece sua compatibilidade temporal.
-LISA publica p-valores brutos e ajustados por FDR Benjamini–Yekutieli, e os
-mapas usam os valores ajustados. Com 999 permutações, o piso do p-valor bruto
-é 0,001; poucas descobertas após ajuste não provam ausência de agrupamento.
-Também são publicadas sensibilidades global/local com taxas ajustadas à
-população pelo método de Assunção–Reis. Compare as duas análises antes de
-interpretar padrões como risco, mantendo a ressalva de subnotificação.
-
-A hipótese local é explicitamente bilateral (`alternative="two-sided"`,
-conforme esda 2.10 no lockfile). Nas tabelas globais, `p_sim` conserva o
-pseudo-p unilateral do PySAL e `p_sim_bilateral` explicita o dobro limitado
-a 1 para interpretação bilateral; não se confunde `two_tailed` analítico
-com o cálculo por permutação.
-
-Os seis notebooks locais de SINAN, integração, SIDRA e análise espacial foram
-reexecutados com a coorte restaurada e contêm resultados salvos. As figuras anteriores
-à correção ficam em `figuras/analise_espacial/anteriores_nao_validadas/` apenas
-para referência histórica e não representam os resultados corrigidos.
-Para regenerar os notebooks leitores, sem executar análises:
-
-```bash
-uv run python -m utils.create_analysis_notebooks
-uv run python -m utils.create_spatial_notebook
-```
-
-### Conclusões atuais
-
-Em 2022, as correlações de saneamento são fracas: água r = 0,1621 e esgoto
-r = 0,1222, sem demonstrar relação causal. Há autocorrelação espacial global
-positiva da taxa (I = 0,4313; p bilateral = 0,002), estável nas sensibilidades
-avaliadas. Nenhum cluster LISA local permanece significativo após FDR-BY a 5%,
-inclusive com taxa ajustada à população; não se sustentam as antigas localizações
-de clusters significativos. A ausência de descobertas locais não elimina o
-padrão global. Na série de 2000–2006, somente a classificação final corrigida
-fundamenta a contagem de confirmados; o antecedente `DENGUE` não mede confirmação,
-incidência ou tendência de casos confirmados.
-
-Nos recortes censitários, a base do IBGE define a grade completa de municípios.
-Quando não há linha correspondente no SINAN, as contagens são zero e a coluna
-`situacao_registro_sinan` registra `sem_notificacao_registrada`; códigos
-municipais inválidos permanecem em uma auditoria separada. As taxas usam a
-população residente do mesmo ano como denominador.
-
-O pipeline exige que a Tabela 136 contenha os 5.565 municípios de 2010,
-sem chaves duplicadas e sem denominadores nulos ou não positivos. A seleção é
-reproduzida pela consulta `/t/136/n6/all/v/93/p/2010/c86/0` e identificada no
-parquet populacional como `SIDRA 136 v93 c86=0 - Censo 2010`.
-
-A documentação metodológica e os resultados estão no vault Obsidian
-`SCC0957-Pratica-de-Ciencia-de-Dados-II-Obsidian`.
+Os notebooks são preparados localmente, sem `git add`, commit ou push. O usuário importa, valida e versiona pelo Databricks; a sincronização posterior deve preservar alterações locais pendentes. Nesta revisão não houve execução remota.

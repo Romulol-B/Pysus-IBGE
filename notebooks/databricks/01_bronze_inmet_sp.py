@@ -11,6 +11,14 @@
 
 # COMMAND ----------
 
+# MAGIC %run ./setup_pipeline
+
+# COMMAND ----------
+
+for parametro in ("execucao_id", "versao_codigo"):
+    dbutils.widgets.text(parametro, "")
+EXECUCAO, REVISAO = iniciar_execucao(dbutils.widgets.get("execucao_id"), dbutils.widgets.get("versao_codigo"))
+
 import csv
 
 from pyspark.sql import functions as F
@@ -29,6 +37,18 @@ TABELA_BRONZE = f"{SCHEMA_BRONZE}.inmet_sp"
 # MAGIC sobre o CSV inteiro e mantém vírgulas decimais e sentinelas para a próxima etapa.
 
 # COMMAND ----------
+
+manifesto = Path(ORIGEM).with_suffix(".publication.json")
+if manifesto.with_suffix(manifesto.suffix + ".pending").exists():
+    raise ValueError("Publicação INMET interrompida; resolva o manifesto antes da carga")
+registro = None
+if manifesto.exists():
+    publicacao = json.loads(manifesto.read_text())
+    candidatos = [r for r in publicacao["arquivos"] if Path(r["path"]).name == Path(ORIGEM).name]
+    if len(candidatos) != 1:
+        raise ValueError("Manifesto INMET sem uma entrada única para o CSV")
+    registro = {**candidatos[0], "publicacao": publicacao["versao"]}
+registrar_arquivo(ORIGEM, registro)
 
 with open(ORIGEM, encoding="utf-8-sig", newline="") as arquivo:
     colunas = next(csv.reader(arquivo, delimiter=";"))
@@ -66,28 +86,8 @@ if not recorte.head(1):
 
 # COMMAND ----------
 
-def validar_bronze():
-    if spark.catalog.getTable(TABELA_BRONZE).tableType != "MANAGED":
-        raise ValueError(f"{TABELA_BRONZE} deve ser uma tabela gerenciada.")
-    detalhe = spark.sql(f"DESCRIBE DETAIL {TABELA_BRONZE}").first()
-    if detalhe["format"] != "delta" or detalhe["properties"].get("delta.columnMapping.mode") != "name":
-        raise ValueError(f"{TABELA_BRONZE} deve usar Delta com column mapping 'name'.")
-    tabela = spark.table(TABELA_BRONZE)
-    if tabela.dtypes != [(c, "string") for c in colunas]:
-        raise ValueError(f"Schema incompatível em {TABELA_BRONZE}; confira os nomes, a ordem e os tipos.")
-    return tabela
-
-
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_BRONZE}")
-if spark.catalog.tableExists(TABELA_BRONZE):
-    validar_bronze()
-
-(
-    recorte.write.format("delta")
-    .mode("overwrite")
-    .option("delta.columnMapping.mode", "name")
-    .saveAsTable(TABELA_BRONZE)
-)
+publicar({TABELA_BRONZE: recorte}, **{"delta.columnMapping.mode": "name"})
 
 # COMMAND ----------
 
@@ -98,7 +98,7 @@ if spark.catalog.tableExists(TABELA_BRONZE):
 
 # COMMAND ----------
 
-salvo = validar_bronze()
+salvo = spark.table(TABELA_BRONZE)
 uf = F.upper(F.trim(F.col("UF")))
 if salvo.filter(uf.isNull() | (uf != "SP")).head(1):
     raise ValueError("A bronze contém registros fora de SP.")

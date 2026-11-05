@@ -6,7 +6,7 @@
 # MAGIC %md
 # MAGIC # Validar a landing INMET no S3
 # MAGIC Execute após configurar IAM, credencial e localização externa conforme
-# MAGIC `docs/databricks/01_conectar_s3.md` e enviar o CSV sintético de duas linhas.
+# MAGIC `README.md` e enviar o CSV sintético de duas linhas.
 # MAGIC Use o compute serverless do Databricks com Unity Catalog. Sem dependências extras.
 # MAGIC Esta etapa registra schema/volume e lê apenas o arquivo de validação.
 
@@ -18,12 +18,10 @@
 # COMMAND ----------
 
 CATALOGO = "dengue_sus"
-SCHEMA = f"{CATALOGO}.landing"  
+SCHEMA = f"{CATALOGO}.landing"
 VOLUME = f"{SCHEMA}.inmet"
 ORIGEM = "s3://pcd2-dengue/pysus-ibge/landing/inmet/"
 ARQUIVO = f"/Volumes/{CATALOGO}/landing/inmet/_validacao/conexao.csv"
-INMET_FILE_NAME = f"INMET_dataset_agregado.csv"
-ARQUIVO_INMET_BUCKET = f"/Volumes/{CATALOGO}/landing/inmet/{INMET_FILE_NAME}"
 
 # COMMAND ----------
 
@@ -38,6 +36,8 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
 spark.sql(f"CREATE EXTERNAL VOLUME IF NOT EXISTS {VOLUME} LOCATION '{ORIGEM}'")
 
 volume = spark.sql(f"DESCRIBE VOLUME {VOLUME}").first()
+if volume["volume_type"] != "EXTERNAL" or volume["storage_location"].rstrip("/") != ORIGEM.rstrip("/"):
+    raise ValueError(f"{VOLUME}: tipo/localização incompatíveis")
 
 # COMMAND ----------
 
@@ -60,16 +60,6 @@ if dados.columns != ["id", "fonte"] or linhas != [("1", "INMET"), ("2", "INMET")
 
 display(dados.limit(2).orderBy("id"))
 print("Conexão validada: 2 linhas lidas do S3 pelo volume externo.")
-
-# COMMAND ----------
-
-dados_reais = (
-    spark.read.option('header',True)
-               .option('sep', ';') 
-               .option('mode','FAILFAST')
-               .csv(ARQUIVO_INMET_BUCKET)
-)
-display(dados_reais.limit(20))
 
 # COMMAND ----------
 
