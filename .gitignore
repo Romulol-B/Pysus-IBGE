@@ -8,3 +8,5 @@ __pycache__/
 /data/*
 !/data/.gitkeep
 docs/
+notebooks/databricks/__pycache__/
+notebooks/databricks/.ipynb_checkpoints/

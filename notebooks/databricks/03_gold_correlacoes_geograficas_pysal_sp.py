@@ -5,7 +5,7 @@
 # ///
 # MAGIC %md
 # MAGIC # Correlações geográficas — SP, 2010 × 2022
-# MAGIC Execute após `06_silver_dengue_sidra_sp`. Compara autocorrelação das taxas
+# MAGIC Execute após `02_silver_dengue_sidra_sp`. Compara autocorrelação das taxas
 # MAGIC municipais e associação com saneamento dos municípios vizinhos.
 # MAGIC Usa a malha IBGE 2022 como referência fixa nos dois anos e KNN com oito
 # MAGIC vizinhos, seguindo o método já existente no projeto. Não cria tabelas.

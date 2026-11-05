@@ -1,0 +1,118 @@
+{
+  "name": "pysus_ibge_agregacao_sp",
+  "description": "Atualiza Bronze e Silver de SIDRA, SINAN e INMET e executa a agregação de SP. Requer catálogo, schemas, volumes e arquivos Landing previamente configurados. Usa os notebooks existentes no Workspace e seus ambientes serverless.",
+  "max_concurrent_runs": 1,
+  "queue": {
+    "enabled": true
+  },
+  "tasks": [
+    {
+      "task_key": "bronze_sidra",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/01_bronze_sidra",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "silver_sidra",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_sidra",
+        "source": "WORKSPACE"
+      },
+      "depends_on": [
+        {
+          "task_key": "bronze_sidra"
+        }
+      ]
+    },
+    {
+      "task_key": "bronze_inmet",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/01_bronze_inmet_sp",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "bronze_sinan",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/01_bronze_sinan_sp",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "silver_sinan",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_sinan_sp",
+        "source": "WORKSPACE"
+      },
+      "depends_on": [
+        {
+          "task_key": "bronze_sinan"
+        },
+        {
+          "task_key": "silver_sidra"
+        }
+      ]
+    },
+    {
+      "task_key": "dengue_sidra",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_dengue_sidra_sp",
+        "source": "WORKSPACE"
+      },
+      "depends_on": [
+        {
+          "task_key": "silver_sidra"
+        },
+        {
+          "task_key": "silver_sinan"
+        }
+      ]
+    },
+    {
+      "task_key": "silver_inmet",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_inmet_sp",
+        "source": "WORKSPACE"
+      },
+      "depends_on": [
+        {
+          "task_key": "bronze_inmet"
+        }
+      ]
+    },
+    {
+      "task_key": "dengue_clima",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/02_silver_dengue_clima_sp",
+        "source": "WORKSPACE"
+      },
+      "depends_on": [
+        {
+          "task_key": "silver_inmet"
+        },
+        {
+          "task_key": "silver_sinan"
+        },
+        {
+          "task_key": "silver_sidra"
+        }
+      ]
+    },
+    {
+      "task_key": "agregacao",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/romin.nf@gmail.com/Pysus-IBGE/notebooks/databricks/11_gold_agregacao",
+        "source": "WORKSPACE"
+      },
+      "depends_on": [
+        {
+          "task_key": "dengue_sidra"
+        },
+        {
+          "task_key": "dengue_clima"
+        }
+      ]
+    }
+  ]
+}

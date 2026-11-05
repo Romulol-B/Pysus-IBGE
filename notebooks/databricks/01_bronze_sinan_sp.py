@@ -5,7 +5,7 @@
 # ///
 # MAGIC %md
 # MAGIC # SINAN — Bronze de residentes em SP
-# MAGIC Execute depois de `03_validar_landing_sinan`, com `DENGBR10.parquet` e
+# MAGIC Execute depois de `00_landing_validar_sinan`, com `DENGBR10.parquet` e
 # MAGIC `DENGBR22.parquet` na Landing. Cada ano é publicado separadamente para
 # MAGIC preservar o esquema original, inclusive diferenças entre arquivos.
 

@@ -5,7 +5,7 @@
 # ///
 # MAGIC %md
 # MAGIC # MVP — correlações descritivas de dengue em SP
-# MAGIC Execute após os notebooks 04–08. Correlação ecológica não demonstra
+# MAGIC Execute após os notebooks Bronze e Silver de SINAN, SIDRA e INMET. Correlação ecológica não demonstra
 # MAGIC causalidade. Saneamento: municípios no mesmo Censo. Clima: meses da UF,
 # MAGIC com 0 ou 1 mês de antecedência; os dois grãos não são misturados.
 

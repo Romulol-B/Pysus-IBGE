@@ -74,7 +74,7 @@ display(dados_reais.limit(20))
 # COMMAND ----------
 
 # A carga bronze tipada como texto e com cabeçalhos normalizados é publicada
-# por 02_recortar_inmet_sp.py. Esta etapa apenas valida a landing.
+# por 01_bronze_inmet_sp.py. Esta etapa apenas valida a landing.
 
 # COMMAND ----------
 
